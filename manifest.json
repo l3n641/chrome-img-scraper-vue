@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "QF 图片采集器",
+  "version": "1.0.0",
+  "description": "基于 Vue3 + XPath 的图片提取与下载工具",
+  "permissions": [
+    "sidePanel",
+    "activeTab",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/ts/background.ts",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开侧边栏"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' http://localhost:5173; object-src 'self'"
+  }
+}
