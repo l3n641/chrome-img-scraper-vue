@@ -52,6 +52,10 @@
         <input v-model="isImgMode" type="checkbox"/>
         仅提取并预览 IMG 标签图片
       </label>
+      <label>
+        <input v-model="isFileRename" type="checkbox"/>
+        文件重命名
+      </label>
     </div>
 
     <div class="actions">
@@ -94,6 +98,7 @@ import CryptoJS from 'crypto-js';
 // 响应式状态
 const xpath = ref('//img');
 const isImgMode = ref(true);
+const isFileRename = ref(false);
 const historyImageStore = ref<Set<string>>(new Set()); // 已下载的历史 URL 集合
 const imageStore = ref<Set<string>>(new Set());        // 待下载的 URL 集合
 const imageList = ref<string[]>([]);
@@ -259,87 +264,128 @@ const startScraping = async () => {
   }
 };
 
+// 辅助函数：延迟
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * 核心：控制并发数量的执行器
+ * @param tasks 任务函数数组（每个函数返回一个 Promise）
+ * @param limit 最大并发数（推荐 3 ~ 5，不要超过 10）
+ * @param delayBetweenTasks 每次启动新任务的微小缓冲延迟（毫秒）
+ */
+const runWithConcurrencyLimit = async (
+    tasks: (() => Promise<void>)[],
+    limit: number,
+    delayBetweenTasks: number = 100
+) => {
+  const executing: Promise<void>[] = [];
+
+  for (const task of tasks) {
+    // 启动任务
+    const p = task();
+    executing.push(p);
+
+    // 任务完成后，从正在执行的队列中移除
+    p.then(() => {
+      const index = executing.indexOf(p);
+      if (index > -1) executing.splice(index, 1);
+    });
+
+    // 如果达到了最大并发数，就等待其中任意一个完成
+    if (executing.size >= limit || executing.length >= limit) {
+      await Promise.race(executing);
+    }
+
+    // 🚀 核心关键：即使并发没满，连续启动新任务时也强制微调休，防止瞬间并发暴击
+    if (delayBetweenTasks > 0) {
+      await sleep(delayBetweenTasks);
+    }
+  }
+
+  // 等待最后一批尾巴任务全部执行完毕
+  await Promise.all(executing);
+};
+
 // 2. 批量下载图片
-// ✨ 新增参数 shouldRename: 是否重命名，默认可以传 true 或 false
-const handleDownloadAll = async (shouldRename: boolean = true) => {
+const handleDownloadAll = async () => {
   const images = [...imageStore.value];
   if (images.length === 0) return;
 
   const activeNamespace = await getEffectiveNamespace();
 
-  images.forEach((url, index) => {
-    console.log(url)
-    if (historyImageStore.value.has(url)) {
-      console.warn(`[拦截] URL 已在下载历史中，跳过执行: ${url}`);
-      imageStore.value.delete(url);
-      return;
-    }
-
-    // 1. 剥离问号和井号，获取干净的 URL 尾部
-    const cleanUrl = url.split('?')[0].split('#')[0];
-    const rawLastSegment = cleanUrl.split('/').pop() || '';
-
-    // 2. 尝试从尾部提取合法扩展名（只匹配末尾的 .jpg, .png 等）
-    const extMatch = rawLastSegment.match(/\.([a-zA-Z0-9]+)$/);
-    const ext = extMatch ? extMatch[1] : 'jpg'; // 提取不到就默认 jpg
-
-    let finalFilename = '';
-
-    if (shouldRename) {
-      // 🚀 情况 A：开启重命名，直接使用 index 编号
-      finalFilename = `img_${index + 1}.${ext}`;
-    } else {
-      // 🚀 情况 B：不开启重命名，尽量保留原始文件名
-      // 检查原文件名是否合法（有点，且不是一长串乱码参数）
-      const hasValidExt = rawLastSegment.includes('.') && rawLastSegment.length <= 20;
-
-      if (hasValidExt) {
-        finalFilename = rawLastSegment;
-      } else {
-        // 如果原文件名不合法（比如你提到的那个特殊 URL），依然强制用 index 兜底，防止报错
-        finalFilename = `img_${index + 1}.${ext}`;
-      }
-    }
-
-    // 3. 拼接命名空间路径
-    const filename = `${activeNamespace}/` + finalFilename;
-
-    chrome.downloads.search({
-      filename: filename,
-      exists: true
-    }, (results: chrome.downloads.DownloadItem[]) => {
-      if (chrome.runtime.lastError) return;
-
-      if (results && results.length > 0) {
-        console.warn(`本地文件已存在，跳过下载并同步更新历史状态: ${filename}`);
-        saveHistoryToDB(activeNamespace, url);
-        historyImageStore.value.add(url);
+  // 1. 将所有图片转化为“待执行的下载任务”数组
+  const tasks = images.map((url, index) => {
+    return async () => {
+      // 检查历史记录
+      if (historyImageStore.value.has(url)) {
+        console.warn(`[拦截] URL 已在下载历史中，跳过执行: ${url}`);
         imageStore.value.delete(url);
         return;
       }
 
-      chrome.downloads.download({
-        url: url,
-        filename: filename,
-        conflictAction: 'uniquify',
-        saveAs: false
-      }, async () => {
-        if (chrome.runtime.lastError) {
-          console.error(`下载失败: ${chrome.runtime.lastError.message}`);
-        } else {
-          historyImageStore.value.add(url);
-          imageStore.value.delete(url);
+      // 文件名解析逻辑
+      const cleanUrl = url.split('?')[0].split('#')[0];
+      const rawLastSegment = cleanUrl.split('/').pop() || '';
+      const extMatch = rawLastSegment.match(/\.([a-zA-Z0-9]+)$/);
+      const ext = extMatch ? extMatch[1] : 'jpg';
 
-          try {
-            await saveHistoryToDB(activeNamespace, url);
-            console.log(`[IndexedDB] 成功保存下载记录: ${url}`);
-          } catch (dbErr) {
-            console.error('写入 IndexedDB 失败:', dbErr);
+      let finalFilename = '';
+      if (isFileRename.value) {
+        finalFilename = `img_${index + 1}.${ext}`;
+      } else {
+        const hasValidExt = rawLastSegment.includes('.') && rawLastSegment.length <= 20;
+        finalFilename = hasValidExt ? rawLastSegment : `img_${index + 1}.${ext}`;
+      }
+
+      const filename = `${activeNamespace}/` + finalFilename;
+
+      // 返回 Promise 以便并发控制器捕获状态
+      return new Promise<void>((resolve) => {
+        chrome.downloads.search({filename, exists: true}, (results) => {
+          if (chrome.runtime.lastError) {
+            resolve();
+            return;
           }
-        }
+
+          if (results && results.length > 0) {
+            console.warn(`本地文件已存在，跳过: ${filename}`);
+            saveHistoryToDB(activeNamespace, url);
+            historyImageStore.value.add(url);
+            imageStore.value.delete(url);
+            resolve();
+            return;
+          }
+
+          // 发起 Chrome 下载
+          chrome.downloads.download({
+            url: url,
+            filename: filename,
+            conflictAction: 'uniquify',
+            saveAs: false
+          }, async () => {
+            if (chrome.runtime.lastError) {
+              console.error(`下载失败: ${chrome.runtime.lastError.message}`);
+            } else {
+              historyImageStore.value.add(url);
+              imageStore.value.delete(url);
+              try {
+                await saveHistoryToDB(activeNamespace, url);
+              } catch (dbErr) {
+                console.error('写入 IndexedDB 失败:', dbErr);
+              }
+            }
+            resolve(); // 🚀 下载结束（无论成败），释放并发窗口
+          });
+        });
       });
-    });
+    };
   });
+
+  // 2. 🚀 启动并发控制引擎：最多同时下载 3 个，每开启新下载间隔 150ms
+  // 几百张图的情况下，这个参数既能保证极高的稳定性，又能成倍提升下载速度
+  await runWithConcurrencyLimit(tasks, 3, 150);
+
+  console.log('🎉 所有大批量下载任务处理完毕！');
 };
 
 const handleImgError = (event: Event) => {
