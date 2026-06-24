@@ -61,6 +61,13 @@
     <div class="actions">
       <button @click="startScraping" class="btn-primary">开始遍历</button>
       <button
+          @click="handleExportData"
+          :disabled="imageStore.size === 0"
+          class="btn-info"
+      >
+        导出数据 ({{ imageStore.size }})
+      </button>
+      <button
           @click="handleDownloadAll"
           :disabled="imageStore.size === 0"
           class="btn-success"
@@ -292,7 +299,7 @@ const runWithConcurrencyLimit = async (
     });
 
     // 如果达到了最大并发数，就等待其中任意一个完成
-    if (executing.size >= limit || executing.length >= limit) {
+    if (executing.length >= limit || executing.length >= limit) {
       await Promise.race(executing);
     }
 
@@ -386,6 +393,41 @@ const handleDownloadAll = async () => {
   await runWithConcurrencyLimit(tasks, 3, 150);
 
   console.log('🎉 所有大批量下载任务处理完毕！');
+};
+
+// 3. 仅导出 imageStore 里的链接到 CSV
+const handleExportData = () => {
+  const images = [...imageStore.value];
+  if (images.length === 0) return;
+
+  // 1. 构造 CSV 内容（\uFEFF 是 BOM 头，防止 Excel 打开时链接包含的特殊字符乱码）
+  let csvContent = '\uFEFF图片链接\n';
+
+  // 2. 将每个 URL 单独作为一行放入 CSV，并用双引号包裹防止参数中有逗号导致错格
+  images.forEach((url) => {
+    const safeUrl = `"${url.replace(/"/g, '""')}"`;
+    csvContent += `${safeUrl}\n`;
+  });
+
+  // 3. 创建 Blob 并通过临时 a 标签触发浏览器下载
+  try {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.setAttribute('download', `image_urls_${Date.now()}.csv`); // 导出的文件名
+
+    document.body.appendChild(link);
+    link.click();
+
+    // 释放内存与节点
+    document.body.removeChild(link);
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    console.error('导出 CSV 失败:', err);
+    errorMsg.value = '导出 CSV 失败';
+  }
 };
 
 const handleImgError = (event: Event) => {
