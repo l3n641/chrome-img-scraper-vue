@@ -98,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import {ref, onMounted, watch} from 'vue';
+import {ref, onMounted, watch, onUnmounted} from 'vue';
 import {scrapeXPath} from './ts/xpathScraper';
 import CryptoJS from 'crypto-js';
 
@@ -244,25 +244,7 @@ const startScraping = async () => {
     const executionResult = results?.[0]?.result as any; // 转换结果断言
     if (executionResult?.success) {
       let finalData = executionResult.data || [];
-
-      if (regexPattern.value.trim() !== '') {
-        try {
-          const reg = new RegExp(regexPattern.value, 'g');
-          finalData = finalData.map((url: string) => url.replace(reg, replaceText.value || ''));
-        } catch (regError: any) {
-          errorMsg.value = `正则表达式错误: ${regError?.message}`;
-          return;
-        }
-      }
-
-      imageList.value = finalData;
-
-      finalData.forEach((item: string) => {
-        if (!historyImageStore.value.has(item)) {
-          imageStore.value.add(item);
-        }
-      });
-
+      processAndStoreImages(finalData)
     } else {
       errorMsg.value = executionResult?.error || '未知解析错误';
     }
@@ -411,7 +393,7 @@ const handleExportData = () => {
 
   // 3. 创建 Blob 并通过临时 a 标签触发浏览器下载
   try {
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
     const blobUrl = URL.createObjectURL(blob);
 
     const link = document.createElement('a');
@@ -434,6 +416,62 @@ const handleImgError = (event: Event) => {
   const target = event.target as HTMLImageElement;
   target.style.display = 'none';
 };
+
+// 监听来自 Content Script 转发过来的消息
+const handleMessage = (message: any, _sender: chrome.runtime.MessageSender, sendResponse: (response?: any) => void) => {
+  if (message.action === 'FROM_PAGE_SCRAPE_RESULT') {
+    const {success, data, error} = message.payload;
+
+    if (success && data) {
+      processAndStoreImages(data)
+    } else {
+      errorMsg.value = error || '抓取失败';
+    }
+
+    // 简单响应 Content Script
+    sendResponse({status: 'ok'});
+  }
+};
+
+/**
+ * 清洗图片 URL 数据并更新相关状态与存储
+ * @param rawUrls 从页面获取到的原始 URL 数组
+ * @returns boolean 表示处理过程是否成功
+ */
+const processAndStoreImages = (rawUrls: string[]): boolean => {
+  let finalData = [...rawUrls];
+
+  // 1. 如果正则规则不为空，进行正则替换清洗
+  if (regexPattern.value.trim() !== '') {
+    try {
+      const reg = new RegExp(regexPattern.value, 'g');
+      finalData = finalData.map((url: string) => url.replace(reg, replaceText.value || ''));
+    } catch (regError: any) {
+      errorMsg.value = `正则表达式错误: ${regError?.message}`;
+      return false; // 处理失败，提前退出
+    }
+  }
+
+  // 2. 更新视图预览数据
+  imageList.value = finalData;
+
+  // 3. 过滤掉历史记录，将新图片存入待下载集合
+  finalData.forEach((item: string) => {
+    if (!historyImageStore.value.has(item)) {
+      imageStore.value.add(item);
+    }
+  });
+
+  return true; // 处理成功
+};
+onMounted(() => {
+  chrome.runtime.onMessage.addListener(handleMessage);
+});
+
+onUnmounted(() => {
+  chrome.runtime.onMessage.removeListener(handleMessage);
+});
+
 </script>
 
 <style scoped>

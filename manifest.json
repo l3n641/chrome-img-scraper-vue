@@ -3,6 +3,16 @@
   "name": "QF 图片采集器",
   "version": "1.0.0",
   "description": "基于 Vue3 + XPath 的图片提取与下载工具",
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/ts/content.ts"
+      ]
+    }
+  ],
   "permissions": [
     "sidePanel",
     "activeTab",
