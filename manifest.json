@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QF 图片采集器",
-  "version": "1.0.0",
-  "description": "基于 Vue3 + XPath 的图片提取与下载工具",
+  "version": "2.0.0",
+  "description": "基于 Vue3 + css选择器的图片提取与下载工具",
   "content_scripts": [
     {
       "matches": [

@@ -1,4 +1,5 @@
 // src/content.ts
+import {scrapeCSS, initImageObserver} from './utils'; // 假设你的提取逻辑封装在这里
 
 // 定义返回的数据类型结构
 export interface ScrapeResult {
@@ -45,4 +46,30 @@ window.addEventListener('message', (event: MessageEvent<CustomMessageEvent>) => 
             }
         );
     }
+});
+
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    // 识别是不是侧边栏发来的特定命令
+    if (message.action === 'START_SCRAPE_FROM_SIDEBAR') {
+        console.log('[Content Script] 收到侧边栏指令:', message.payload);
+
+        const {command, args} = message.payload;
+        console.log(command)
+        switch (command) {
+            case "scrapeCSS":
+                const result = scrapeCSS(args.selector, args.selectorAttribute);
+                // 将结果直接回调传给侧边栏
+                console.log(result);
+                sendResponse(result);
+                break;
+            case "initImageObserver":
+                initImageObserver(args.listenNode, args.selector, args.selectorAttribute)
+        }
+    }
+
+    // ⭐ 极其重要：如果你的提取逻辑包含 async/await 异步操作，
+    // 必须在这里 return true，告诉 Chrome 保持通信通道处于开启状态，等待 sendResponse。
+    // 如果是同步逻辑，可以不写 return true。
+    return true;
 });

@@ -3,12 +3,26 @@
     <h3>QF 图片采集器</h3>
 
     <div class="form-item">
-      <label for="xpath-input">XPath 规则:</label>
+      <label for="xpath-input">css 选择器</label>
       <input
-          id="xpath-input"
-          v-model="xpath"
+          id="selector-input"
+          v-model="selector"
           type="text"
-          placeholder="例如: //img 或 //div[@class='thumb']/img"
+          placeholder="css选择器"
+      />
+      <label for="xpath-input">选择属性</label>
+      <input
+          id="selector-input"
+          v-model="selectorAttribute"
+          type="text"
+          placeholder="选择属性 默认 src"
+      />
+      <label for="namespace-input">监听节点:</label>
+      <input
+          id="listen-node-input"
+          v-model="listenNode"
+          type="text"
+          placeholder="监听新增节点"
       />
     </div>
 
@@ -21,77 +35,79 @@
           type="text"
           placeholder="用于下载图片的时候加上前缀，如果没用默认以当前url md5值"
       />
-    </div>
 
-    <div class="form-item">
-      <div class="regex-tools">
-        <div class="input-group">
-          <label>正则替换 (如: _\d+x\d+):</label>
-          <input
-              v-model="regexPattern"
-              type="text"
-              placeholder="输入正则表达式，留空不替换"
-              class="my-input"
-          />
-        </div>
 
-        <div class="input-group">
-          <label>替换内容 (如: 空白或大图后缀):</label>
-          <input
-              v-model="replaceText"
-              type="text"
-              placeholder="要替换成的内容"
-              class="my-input"
-          />
+      <div class="form-item">
+        <div class="regex-tools">
+          <div class="input-group">
+            <label>正则替换 (如: _\d+x\d+):</label>
+            <input
+                v-model="regexPattern"
+                type="text"
+                placeholder="输入正则表达式，留空不替换"
+                class="my-input"
+            />
+          </div>
+
+          <div class="input-group">
+            <label>替换内容 (如: 空白或大图后缀):</label>
+            <input
+                v-model="replaceText"
+                type="text"
+                placeholder="要替换成的内容"
+                class="my-input"
+            />
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="form-item checkbox-item">
-      <label>
-        <input v-model="isImgMode" type="checkbox"/>
-        仅提取并预览 IMG 标签图片
-      </label>
-      <label>
-        <input v-model="isFileRename" type="checkbox"/>
-        文件重命名
-      </label>
-    </div>
+      <div class="form-item checkbox-item">
+        <label>
+          <input v-model="isImgMode" type="checkbox"/>
+          预览 IMG 标签图片
+        </label>
+        <label>
+          <input v-model="isFileRename" type="checkbox"/>
+          文件重命名
+        </label>
+      </div>
 
-    <div class="actions">
-      <button @click="startScraping" class="btn-primary">开始遍历</button>
-      <button
-          @click="handleExportData"
-          :disabled="imageStore.size === 0"
-          class="btn-info"
-      >
-        导出数据 ({{ imageStore.size }})
-      </button>
-      <button
-          @click="handleDownloadAll"
-          :disabled="imageStore.size === 0"
-          class="btn-success"
-      >
-        下载全部 ({{ imageStore.size }})
-      </button>
-    </div>
 
-    <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
+      <div class="actions">
+        <button @click="sendCommandToPage" :disabled="isDisableButtonStart" class="btn-primary">开始遍历</button>
+        <button
+            @click="handleExportData"
+            :disabled="imageStore.size === 0"
+            class="btn-info"
+        >
+          导出数据 ({{ imageStore.size }})
+        </button>
+        <button
+            @click="handleDownloadAll"
+            :disabled="imageStore.size === 0"
+            class="btn-success"
+        >
+          下载全部 ({{ imageStore.size }})
+        </button>
+      </div>
 
-    <hr class="divider"/>
-    <h2>当前规则匹配数量: {{ imageList.length }}</h2>
-    <div v-if="isImgMode" class="preview-grid">
-      <div
-          v-for="(url, index) in imageList"
-          :key="index"
-          class="img-card"
-      >
-        <img
-            :src="url"
-            alt="preview"
-            :style="{ opacity: historyImageStore.has(url) ? 0.4 : 1 }"
-            @error="handleImgError"
-        />
+      <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
+
+      <hr class="divider"/>
+      <h2>当前规则匹配数量: {{ imageList.length }}</h2>
+      <div v-if="isImgMode" class="preview-grid">
+        <div
+            v-for="(url, index) in imageList"
+            :key="index"
+            class="img-card"
+        >
+          <img
+              :src="url"
+              alt="preview"
+              :style="{ opacity: historyImageStore.has(url) ? 0.4 : 1 }"
+              @error="handleImgError"
+          />
+        </div>
       </div>
     </div>
   </div>
@@ -99,12 +115,20 @@
 
 <script setup lang="ts">
 import {ref, onMounted, watch, onUnmounted} from 'vue';
-import {scrapeXPath} from './ts/xpathScraper';
-import CryptoJS from 'crypto-js';
+import {
+  saveHistoryToDB,
+  getHistoryFromDB,
+  getEffectiveNamespace,
+  saveDataToLocal,
+  runWithConcurrencyLimit
+} from './ts/app.ts'
 
 // 响应式状态
-const xpath = ref('//img');
+const selector = ref('img');
+const selectorAttribute = ref('src');
+const listenNode = ref('');
 const isImgMode = ref(true);
+const isDisableButtonStart = ref(false);
 const isFileRename = ref(false);
 const historyImageStore = ref<Set<string>>(new Set()); // 已下载的历史 URL 集合
 const imageStore = ref<Set<string>>(new Set());        // 待下载的 URL 集合
@@ -115,77 +139,11 @@ const namespace = ref('');
 const regexPattern = ref('\\?.*$');
 const replaceText = ref('');
 
-// ================== IndexedDB 核心功能 ==================
-const DB_NAME = 'QF_ImageScraper_DB';
-const STORE_NAME = 'download_history';
-const DB_VERSION = 1;
-
-const initDB = (): Promise<IDBDatabase> => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-    request.onsuccess = (event: Event) => resolve((event.target as IDBOpenDBRequest).result);
-    request.onerror = (event: Event) => reject((event.target as IDBOpenDBRequest).error);
-  });
-};
-
-// ✨ 修复点 1：将返回值改为具体的 Promise<string[]>，避免出现 unknown 类型错误
-const getHistoryFromDB = async (currentNamespace: string): Promise<string[]> => {
-  if (!currentNamespace) return [];
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get(currentNamespace);
-    request.onsuccess = () => resolve((request.result as string[]) || []);
-    request.onerror = () => reject(request.error);
-  });
-};
-
-const saveHistoryToDB = async (currentNamespace: string, newUrl: string) => {
-  if (!currentNamespace) return;
-  const db = await initDB();
-  const currentHistory = await getHistoryFromDB(currentNamespace);
-
-  if (!currentHistory.includes(newUrl)) {
-    currentHistory.push(newUrl);
-  }
-
-  return new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.put(currentHistory, currentNamespace);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-};
-
-// ================== 业务逻辑方法 ==================
-
-const getCurrentTab = async () => {
-  const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
-  return tab;
-};
-
-// 获取当前实际有效的 Namespace
-const getEffectiveNamespace = async (): Promise<string> => {
-  if (namespace.value.trim()) {
-    return namespace.value.trim();
-  }
-  const tab = await getCurrentTab();
-  const currentUrl = tab?.url || window.location.href;
-  return CryptoJS.MD5(currentUrl).toString();
-};
 
 // 根据当前的命名空间加载已下载历史
 const loadHistoryByNamespace = async () => {
   try {
-    const targetNamespace = await getEffectiveNamespace();
+    const targetNamespace = await getEffectiveNamespace(namespace.value);
     // historyArray 现在被正确识别为 string[]
     const historyArray = await getHistoryFromDB(targetNamespace);
     historyImageStore.value = new Set(historyArray);
@@ -203,10 +161,17 @@ const loadHistoryByNamespace = async () => {
 
 onMounted(async () => {
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    // ✨ 修复点 2：为传入的 result 声明具体类型，或者依赖 @types/chrome 推导
-    chrome.storage.local.get(['lastXpath'], (result: { [key: string]: any }) => {
-      if (result.lastXpath) {
-        xpath.value = result.lastXpath;
+    chrome.storage.local.get(['lastSelector', 'lastSelectorAttribute', 'lastListenNode'], (result: {
+      [key: string]: any
+    }) => {
+      if (result.lastSelector) {
+        selector.value = result.lastSelector;
+      }
+      if (result.lastSelectorAttribute) {
+        selectorAttribute.value = result.lastSelectorAttribute;
+      }
+      if (result.lastListenNode) {
+        listenNode.value = result.lastListenNode;
       }
     });
   }
@@ -218,89 +183,75 @@ watch(namespace, () => {
   loadHistoryByNamespace();
 });
 
-async function saveDataToLocal(key: string, data: any) {
-  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    await chrome.storage.local.set({[key]: data});
-  }
-}
 
-// 1. 执行 XPath 扫描
-const startScraping = async () => {
-  await saveDataToLocal('lastXpath', xpath.value);
+// 侧边栏发送命令的函数
+const sendCommandToPage = async () => {
 
-  const tab = await getCurrentTab();
-  if (!tab?.id) return;
-
-  errorMsg.value = '';
+  await saveDataToLocal('lastSelector', selector.value);
+  await saveDataToLocal('lastSelectorAttribute', selectorAttribute.value);
+  await saveDataToLocal('lastListenNode', listenNode.value);
 
   try {
-    const results = await chrome.scripting.executeScript({
-      target: {tabId: tab.id},
-      func: scrapeXPath,
-      args: [xpath.value, isImgMode.value],
-    });
-    console.log(results)
+    // 1. 获取当前活跃的标签页 (Tab)
+    const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+    if (!tab?.id) {
+      console.warn('未找到活跃的标签页');
+      return;
+    }
 
-    const executionResult = results?.[0]?.result as any; // 转换结果断言
-    if (executionResult?.success) {
-      let finalData = executionResult.data || [];
-      processAndStoreImages(finalData)
+    let command: string = "";
+    if (listenNode.value && listenNode.value.trim() !== '') {
+      console.log("执行 initImageObserver")
+      isDisableButtonStart.value = true
+      command = "initImageObserver"
     } else {
-      errorMsg.value = executionResult?.error || '未知解析错误';
+      console.log("执行 scrapeCSS")
+      command = "scrapeCSS"
+
     }
-  } catch (err: any) {
-    errorMsg.value = `脚本注入失败或执行挂掉: ${err?.message}`;
+
+
+    // 2. 向该标签页的 content.js 发送指令
+    chrome.tabs.sendMessage(
+        tab.id,
+        {
+          action: 'START_SCRAPE_FROM_SIDEBAR',
+          payload: {
+            command,
+            args: {
+              selector: selector.value,
+              selectorAttribute: selectorAttribute.value,
+              listenNode: listenNode.value,
+            }
+          }
+        },
+        (response) => {
+          // 接收 content.js 执行完后返回的数据
+          if (chrome.runtime.lastError) {
+            console.error('发送失败，该网页可能没有注入 content.js:', chrome.runtime.lastError.message);
+          } else {
+            console.log(response);
+            if (response?.success) {
+              let finalData = response.data || [];
+              processAndStoreImages(finalData)
+            } else {
+              errorMsg.value = response?.error || '未知解析错误';
+            }
+          }
+        }
+    );
+  } catch (error) {
+    console.error('通信异常:', error);
   }
 };
 
-// 辅助函数：延迟
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * 核心：控制并发数量的执行器
- * @param tasks 任务函数数组（每个函数返回一个 Promise）
- * @param limit 最大并发数（推荐 3 ~ 5，不要超过 10）
- * @param delayBetweenTasks 每次启动新任务的微小缓冲延迟（毫秒）
- */
-const runWithConcurrencyLimit = async (
-    tasks: (() => Promise<void>)[],
-    limit: number,
-    delayBetweenTasks: number = 100
-) => {
-  const executing: Promise<void>[] = [];
-
-  for (const task of tasks) {
-    // 启动任务
-    const p = task();
-    executing.push(p);
-
-    // 任务完成后，从正在执行的队列中移除
-    p.then(() => {
-      const index = executing.indexOf(p);
-      if (index > -1) executing.splice(index, 1);
-    });
-
-    // 如果达到了最大并发数，就等待其中任意一个完成
-    if (executing.length >= limit || executing.length >= limit) {
-      await Promise.race(executing);
-    }
-
-    // 🚀 核心关键：即使并发没满，连续启动新任务时也强制微调休，防止瞬间并发暴击
-    if (delayBetweenTasks > 0) {
-      await sleep(delayBetweenTasks);
-    }
-  }
-
-  // 等待最后一批尾巴任务全部执行完毕
-  await Promise.all(executing);
-};
 
 // 2. 批量下载图片
 const handleDownloadAll = async () => {
   const images = [...imageStore.value];
   if (images.length === 0) return;
 
-  const activeNamespace = await getEffectiveNamespace();
+  const activeNamespace = await getEffectiveNamespace(namespace.value);
 
   // 1. 将所有图片转化为“待执行的下载任务”数组
   const tasks = images.map((url, index) => {
