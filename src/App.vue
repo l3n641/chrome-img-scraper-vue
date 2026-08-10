@@ -161,7 +161,7 @@ const loadHistoryByNamespace = async () => {
 
 onMounted(async () => {
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    chrome.storage.local.get(['lastSelector', 'lastSelectorAttribute', 'lastListenNode'], (result: {
+    chrome.storage.local.get(['lastSelector', 'lastSelectorAttribute', 'lastListenNode', 'lastNamespace', 'lastRegexPattern', "lastReplaceText"], (result: {
       [key: string]: any
     }) => {
       if (result.lastSelector) {
@@ -172,6 +172,15 @@ onMounted(async () => {
       }
       if (result.lastListenNode) {
         listenNode.value = result.lastListenNode;
+      }
+      if (result.lastNamespace) {
+        namespace.value = result.lastNamespace;
+      }
+      if (result.lastRegexPattern) {
+        regexPattern.value = result.lastRegexPattern;
+      }
+      if (result.lastReplaceText) {
+        replaceText.value = result.lastReplaceText;
       }
     });
   }
@@ -190,6 +199,9 @@ const sendCommandToPage = async () => {
   await saveDataToLocal('lastSelector', selector.value);
   await saveDataToLocal('lastSelectorAttribute', selectorAttribute.value);
   await saveDataToLocal('lastListenNode', listenNode.value);
+  await saveDataToLocal('lastNamespace', namespace.value);
+  await saveDataToLocal('lastRegexPattern', regexPattern.value);
+  await saveDataToLocal('lastReplaceText', replaceText.value);
 
   try {
     // 1. 获取当前活跃的标签页 (Tab)
