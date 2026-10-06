@@ -2,6 +2,58 @@
   <div class="side-panel">
     <h3>QF 图片采集器</h3>
 
+    <!-- 规则模板管理区 -->
+    <div class="template-section">
+      <div class="template-header">
+        <label for="template-select">规则模板</label>
+        <button
+            type="button"
+            class="btn-text-action"
+            @click="showSaveBox = !showSaveBox"
+            :title="showSaveBox ? '取消保存' : '将当前输入框内容保存为模板'"
+        >
+          {{ showSaveBox ? '✕ 取消' : '＋ 存为模板' }}
+        </button>
+      </div>
+
+      <div class="template-row">
+        <select
+            id="template-select"
+            v-model="selectedTemplateId"
+            @change="applyTemplate"
+            class="template-select"
+        >
+          <option value="">-- 选择已有模板 --</option>
+          <option v-for="tpl in templateList" :key="tpl.id" :value="tpl.id">
+            {{ tpl.name }}
+          </option>
+        </select>
+        <button
+            v-if="selectedTemplateId"
+            type="button"
+            class="btn-delete-template"
+            @click="deleteTemplate(selectedTemplateId)"
+            title="删除选中的模板"
+        >
+          删除
+        </button>
+      </div>
+
+      <!-- 另存为新模板输入框 -->
+      <div v-if="showSaveBox" class="save-template-box">
+        <input
+            v-model="newTemplateName"
+            type="text"
+            placeholder="输入模板名称，如: 某站瀑布流"
+            @keyup.enter="saveCurrentAsTemplate"
+            class="template-input"
+        />
+        <button type="button" @click="saveCurrentAsTemplate" class="btn-confirm-save">
+          保存
+        </button>
+      </div>
+    </div>
+
     <div class="form-item">
       <label for="selector-input">CSS 选择器</label>
       <input
@@ -175,6 +227,26 @@ import {
   runWithConcurrencyLimit
 } from './ts/app.ts';
 
+// 模板数据结构定义
+export interface ScraperTemplate {
+  id: string;
+  name: string;
+  selector: string;
+  selectorAttribute: string;
+  listenNode: string;
+  namespace: string;
+  regexPattern: string;
+  replaceText: string;
+  isImgMode: boolean;
+  isFileRename: boolean;
+}
+
+// 模板管理状态
+const templateList = ref<ScraperTemplate[]>([]);
+const selectedTemplateId = ref<string>('');
+const showSaveBox = ref(false);
+const newTemplateName = ref('');
+
 // 响应式状态
 const selector = ref('img');
 const selectorAttribute = ref('src');
@@ -199,6 +271,108 @@ const downloadStatus = ref({
   success: 0,
   failed: 0,
 });
+
+// 加载已保存的模板列表
+const loadTemplates = () => {
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    chrome.storage.local.get(['scraperTemplates', 'lastSelectedTemplateId'], (res: {[key: string]: any}) => {
+      console.log('[模板加载]', typeof res.scraperTemplates, res.scraperTemplates);
+      if (Array.isArray(res.scraperTemplates)) {
+        templateList.value = res.scraperTemplates;
+      } else if (res.scraperTemplates && typeof res.scraperTemplates === 'object') {
+        // 兜底兼容：如果历史数据被序列化成了 { 0: {...}, 1: {...} } 对象，自动转为数组
+        templateList.value = Object.values(res.scraperTemplates);
+      } else {
+        templateList.value = [];
+      }
+
+      if (res.lastSelectedTemplateId) {
+        selectedTemplateId.value = res.lastSelectedTemplateId;
+      }
+    });
+  }
+};
+
+
+// 应用选中的模板
+const applyTemplate = () => {
+  if (!selectedTemplateId.value) return;
+  const target = templateList.value.find(t => t.id === selectedTemplateId.value);
+  if (!target) return;
+
+  selector.value = target.selector;
+  selectorAttribute.value = target.selectorAttribute;
+  listenNode.value = target.listenNode || '';
+  namespace.value = target.namespace || '';
+  regexPattern.value = target.regexPattern ?? '\\?.*$';
+  replaceText.value = target.replaceText ?? '';
+  if (typeof target.isImgMode === 'boolean') isImgMode.value = target.isImgMode;
+  if (typeof target.isFileRename === 'boolean') isFileRename.value = target.isFileRename;
+
+  saveDataToLocal('lastSelectedTemplateId', selectedTemplateId.value);
+  console.log(`[模板] 已切换应用模板: ${target.name}`);
+};
+
+// 保存当前表单输入框内容为新模板
+const saveCurrentAsTemplate = async () => {
+  const name = newTemplateName.value.trim();
+  if (!name) {
+    errorMsg.value = '请输入模板名称';
+    return;
+  }
+
+  const newTemplate: ScraperTemplate = {
+    id: 'tpl_' + Date.now(),
+    name,
+    selector: selector.value,
+    selectorAttribute: selectorAttribute.value,
+    listenNode: listenNode.value,
+    namespace: namespace.value,
+    regexPattern: regexPattern.value,
+    replaceText: replaceText.value,
+    isImgMode: isImgMode.value,
+    isFileRename: isFileRename.value,
+  };
+
+  const existingIndex = templateList.value.findIndex(t => t.name === name);
+  if (existingIndex > -1) {
+    if (!confirm(`已存在名称为 "${name}" 的模板，是否覆盖更新？`)) {
+      return;
+    }
+    newTemplate.id = templateList.value[existingIndex].id;
+    templateList.value[existingIndex] = newTemplate;
+  } else {
+    templateList.value.push(newTemplate);
+  }
+
+  await saveDataToLocal('scraperTemplates', templateList.value);
+  selectedTemplateId.value = newTemplate.id;
+  await saveDataToLocal('lastSelectedTemplateId', newTemplate.id);
+
+  newTemplateName.value = '';
+  showSaveBox.value = false;
+  errorMsg.value = '';
+  console.log(`[模板] 已保存模板: ${name}`);
+};
+
+// 删除选中的模板
+const deleteTemplate = async (id: string) => {
+  const target = templateList.value.find(t => t.id === id);
+  if (!target) return;
+
+  if (!confirm(`确定要删除模板 "${target.name}" 吗？`)) {
+    return;
+  }
+
+  templateList.value = templateList.value.filter(t => t.id !== id);
+  await saveDataToLocal('scraperTemplates', templateList.value);
+
+  if (selectedTemplateId.value === id) {
+    selectedTemplateId.value = '';
+    await saveDataToLocal('lastSelectedTemplateId', '');
+  }
+  console.log(`[模板] 已删除模板: ${target.name}`);
+};
 
 // 根据命名空间加载已下载历史
 const loadHistoryByNamespace = async () => {
@@ -244,6 +418,8 @@ const handleClearList = () => {
 };
 
 onMounted(async () => {
+  loadTemplates();
+
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
     chrome.storage.local.get(
         ['lastSelector', 'lastSelectorAttribute', 'lastListenNode', 'lastNamespace', 'lastRegexPattern', 'lastReplaceText'],
@@ -545,6 +721,114 @@ h3 {
   color: #2c3e50;
   border-bottom: 2px solid #3498db;
   padding-bottom: 8px;
+}
+
+/* 模板管理样式 */
+.template-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 14px;
+}
+
+.template-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.template-header label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.btn-text-action {
+  background: none;
+  border: none;
+  color: #3498db;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn-text-action:hover {
+  color: #2980b9;
+}
+
+.template-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.template-select {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 13px;
+  background-color: #fff;
+  color: #333;
+  outline: none;
+}
+
+.template-select:focus {
+  border-color: #3498db;
+}
+
+.btn-delete-template {
+  flex: 0 0 auto;
+  background-color: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: normal;
+}
+
+.btn-delete-template:hover {
+  background-color: #dc2626;
+}
+
+.save-template-box {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.template-input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #3498db;
+  border-radius: 4px;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.template-input:focus {
+  outline: none;
+}
+
+.btn-confirm-save {
+  flex: 0 0 auto;
+  background-color: #3498db;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn-confirm-save:hover {
+  background-color: #2980b9;
 }
 
 .form-item {

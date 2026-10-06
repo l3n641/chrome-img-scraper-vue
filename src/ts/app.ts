@@ -91,9 +91,12 @@ export const getEffectiveNamespace = async (namespace: string): Promise<string> 
 
 export async function saveDataToLocal(key: string, data: any) {
     if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        await chrome.storage.local.set({[key]: data});
+        // 使用 JSON 序列化脱去 Vue 3 Proxy 包装，防止数组被 Chrome 存储序列化为普通 Object
+        const plainData = data !== undefined ? JSON.parse(JSON.stringify(data)) : data;
+        await chrome.storage.local.set({[key]: plainData});
     }
 }
+
 
 // 辅助函数：延迟
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
