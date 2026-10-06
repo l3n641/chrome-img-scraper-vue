@@ -31,19 +31,39 @@ export const getHistoryFromDB = async (currentNamespace: string): Promise<string
     });
 };
 
-export const saveHistoryToDB = async (currentNamespace: string, newUrl: string) => {
+// 使用 Promise 链式队列，杜绝并发下载时 saveHistoryToDB 的 Lost Update 覆盖问题
+let dbQueue: Promise<void> = Promise.resolve();
+
+export const saveHistoryToDB = (currentNamespace: string, newUrl: string): Promise<void> => {
+    dbQueue = dbQueue.then(async () => {
+        if (!currentNamespace || !newUrl) return;
+        const db = await initDB();
+        const currentHistory = await getHistoryFromDB(currentNamespace);
+
+        if (!currentHistory.includes(newUrl)) {
+            currentHistory.push(newUrl);
+            return new Promise<void>((resolve, reject) => {
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.put(currentHistory, currentNamespace);
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
+            });
+        }
+    }).catch((err) => {
+        console.error('[IndexedDB] 写入历史记录异常:', err);
+    });
+    return dbQueue;
+};
+
+// 清空指定命名空间的历史记录
+export const clearHistoryInDB = async (currentNamespace: string): Promise<void> => {
     if (!currentNamespace) return;
     const db = await initDB();
-    const currentHistory = await getHistoryFromDB(currentNamespace);
-
-    if (!currentHistory.includes(newUrl)) {
-        currentHistory.push(newUrl);
-    }
-
     return new Promise<void>((resolve, reject) => {
         const transaction = db.transaction(STORE_NAME, 'readwrite');
         const store = transaction.objectStore(STORE_NAME);
-        const request = store.put(currentHistory, currentNamespace);
+        const request = store.delete(currentNamespace);
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
     });
@@ -54,10 +74,15 @@ export const getCurrentTab = async () => {
     return tab;
 };
 
+// 清洗 Windows/Linux 非法字符
+export const sanitizeFilename = (name: string): string => {
+    return name.replace(/[\\/:*?"<>|\r\n\t]/g, '_').trim();
+};
+
 // 获取当前实际有效的 Namespace
 export const getEffectiveNamespace = async (namespace: string): Promise<string> => {
     if (namespace.trim()) {
-        return namespace.trim();
+        return sanitizeFilename(namespace.trim());
     }
     const tab = await getCurrentTab();
     const currentUrl = tab?.url || window.location.href;
@@ -70,46 +95,53 @@ export async function saveDataToLocal(key: string, data: any) {
     }
 }
 
-
 // 辅助函数：延迟
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * 核心：控制并发数量的执行器
  * @param tasks 任务函数数组（每个函数返回一个 Promise）
- * @param limit 最大并发数（推荐 3 ~ 5，不要超过 10）
- * @param delayBetweenTasks 每次启动新任务的微小缓冲延迟（毫秒）
+ * @param limit 最大并发数（推荐 3 ~ 5）
+ * @param delayBetweenTasks 启动间隔
+ * @param onProgress 进度回调 (已完成数, 总数)
  */
 export const runWithConcurrencyLimit = async (
     tasks: (() => Promise<void>)[],
     limit: number,
-    delayBetweenTasks: number = 100
+    delayBetweenTasks: number = 100,
+    onProgress?: (completed: number, total: number) => void
 ) => {
     const executing: Promise<void>[] = [];
+    let completedCount = 0;
+    const totalCount = tasks.length;
 
     for (const task of tasks) {
-        // 启动任务
-        const p = task();
-        executing.push(p);
-
-        // 任务完成后，从正在执行的队列中移除
-        p.then(() => {
+        // 启动任务并捕获异常，防止单任务失败阻断全部下载
+        const p = Promise.resolve().then(() => task()).catch((err) => {
+            console.error('[Concurrency Task Error]:', err);
+        }).finally(() => {
+            completedCount++;
+            if (onProgress) {
+                onProgress(completedCount, totalCount);
+            }
             const index = executing.indexOf(p);
             if (index > -1) executing.splice(index, 1);
         });
 
-        // 如果达到了最大并发数，就等待其中任意一个完成
-        if (executing.length >= limit || executing.length >= limit) {
+        executing.push(p);
+
+        // 如果达到了最大并发数，等待其中任意一个完成
+        if (executing.length >= limit) {
             await Promise.race(executing);
         }
 
-        // 🚀 核心关键：即使并发没满，连续启动新任务时也强制微调休，防止瞬间并发暴击
         if (delayBetweenTasks > 0) {
             await sleep(delayBetweenTasks);
         }
     }
 
-    // 等待最后一批尾巴任务全部执行完毕
+    // 等待最后一批任务全部完成
     await Promise.all(executing);
 };
+
 

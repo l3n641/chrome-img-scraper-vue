@@ -1,17 +1,53 @@
+let currentObserver: MutationObserver | null = null;
+
+/**
+ * 停止当前运行的 MutationObserver
+ */
+export function stopImageObserver() {
+    if (currentObserver) {
+        currentObserver.disconnect();
+        currentObserver = null;
+        console.log('[Observer] 监听已停止');
+    }
+}
+
+/**
+ * 统一将 URL（相对路径、协议相对路径）转换为绝对路径
+ */
+export function toAbsoluteUrl(url: string): string {
+    if (!url || !url.trim()) return '';
+    const trimmed = url.trim();
+    // base64 或 blob 链接保持原样
+    if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+        return trimmed;
+    }
+    try {
+        return new URL(trimmed, window.location.href).href;
+    } catch {
+        return trimmed;
+    }
+}
+
+/**
+ * 根据 CSS 选择器提取指定属性
+ */
 export function scrapeCSS(
     cssSelector: string,
-    attributeName: string,
+    attributeName: string = 'src',
     root: Document | Element = document,
 ) {
     const results: string[] = [];
     try {
-        console.log(cssSelector, attributeName)
         if (!cssSelector?.trim()) return {success: true, data: results};
+        const attr = attributeName?.trim() || 'src';
 
-        // 提取单个元素的指定属性
+        // 提取单个元素的指定属性并转为绝对路径
         const extractAttr = (element: Element) => {
-            const val = element.getAttribute(attributeName);
-            if (val) results.push(val);
+            const val = element.getAttribute(attr);
+            if (val) {
+                const absolute = toAbsoluteUrl(val);
+                if (absolute) results.push(absolute);
+            }
         };
 
         // 1. 处理 root 本身就匹配 cssSelector 的情况
@@ -30,84 +66,87 @@ export function scrapeCSS(
     }
 }
 
-
 /**
- * 动态监听函数
+ * 动态监听函数：监听新节点并提取图片
  */
 export function initImageObserver(
     listenSelector: string,
     targetCssSelector: string,
-    attributeName: string,
+    attributeName: string = 'src',
 ) {
-    const container = document.querySelector('#contentScrollPaginator') || document.body;
-    console.log(1)
+    // 启动前先停止之前的 observer，避免重复挂载
+    stopImageObserver();
+
+    // 优先使用用户指定的监听容器，否则默认监听 document.body
+    const container = (listenSelector?.trim() ? document.querySelector(listenSelector.trim()) : null) || document.body;
     if (!container) {
-        setTimeout(() => initImageObserver(listenSelector, targetCssSelector, attributeName), 500);
-        return {success: true, message: '等待容器加载后初始化 Observer'};
+        return {success: false, error: '未找到监听容器节点', data: []};
     }
 
+    const recordedUrls = new Set<string>();
+
     const extractFromNode = (node: Element): string[] => {
-        // 先找到监听的节点容器
         const targets: Element[] = [];
-        if (node.matches && node.matches(listenSelector)) {
+        if (listenSelector?.trim()) {
+            if (node.matches && node.matches(listenSelector)) {
+                targets.push(node);
+            }
+            if (node.querySelectorAll) {
+                targets.push(...Array.from(node.querySelectorAll(listenSelector)));
+            }
+        } else {
             targets.push(node);
         }
-        if (node.querySelectorAll) {
-            targets.push(...Array.from(node.querySelectorAll(listenSelector)));
-        }
-        console.log(2)
 
         const nodeResults: string[] = [];
-        // 对每个监听容器执行 scrapeCSS
         targets.forEach(target => {
-            console.log(3)
-
             const res = scrapeCSS(targetCssSelector, attributeName, target);
             if (res.success && res.data) {
                 nodeResults.push(...res.data);
             }
         });
-        console.log(nodeResults)
 
         return nodeResults;
     };
 
-    // 1. 首次全量扫描已有的 listenSelector 节点
-    const initialData: string[] = [];
-    const existingNodes = document.querySelectorAll(listenSelector);
-    existingNodes.forEach(node => {
-        const res = scrapeCSS(targetCssSelector, attributeName, node);
-        if (res.success && res.data) {
-            initialData.push(...res.data);
-        }
-    });
+    // 1. 首次全量扫描已有的 targetCssSelector 节点
+    const initialRes = scrapeCSS(targetCssSelector, attributeName, container);
+    const initialData = initialRes.data || [];
+    initialData.forEach(url => recordedUrls.add(url));
 
     // 2. 建立 MutationObserver 监听后续动态追加的节点
-    const observer = new MutationObserver((mutationsList) => {
+    currentObserver = new MutationObserver((mutationsList) => {
         const newData: string[] = [];
 
         for (const mutation of mutationsList) {
             if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType !== Node.ELEMENT_NODE) return;
-                    newData.push(...extractFromNode(node as Element));
+                    const urls = extractFromNode(node as Element);
+                    urls.forEach(url => {
+                        if (!recordedUrls.has(url)) {
+                            recordedUrls.add(url);
+                            newData.push(url);
+                        }
+                    });
                 });
             }
         }
-        console.log(newData);
+
+        // 保留用户通过控制台或这里 postMessage 通信的机制
         if (newData.length > 0) {
             window.postMessage({
                 source: 'MY_SCRAPER_SNIPPET',
                 type: 'SCRAPE_RESULT',
                 payload: {
                     success: true,
-                    data: newData
+                    data: Array.from(new Set(newData))
                 }
             }, '*');
         }
     });
 
-    observer.observe(container, {
+    currentObserver.observe(container, {
         childList: true,
         subtree: true,
     });
