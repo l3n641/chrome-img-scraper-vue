@@ -89,6 +89,89 @@ export const getEffectiveNamespace = async (namespace: string): Promise<string> 
     return CryptoJS.MD5(currentUrl).toString();
 };
 
+export type RenameMode = 'original' | 'md5' | 'index';
+
+/**
+ * 从 URL 或 DataURL 中提取图片扩展名
+ */
+export const getImageExtension = (url: string): string => {
+    if (!url) return 'jpg';
+
+    // 1. Data URL 处理
+    if (url.startsWith('data:image/')) {
+        const mimeMatch = url.match(/^data:image\/([a-zA-Z0-9+.-]+);/);
+        if (mimeMatch) {
+            let ext = mimeMatch[1].toLowerCase();
+            if (ext === 'jpeg') ext = 'jpg';
+            if (ext.includes('+xml') || ext === 'svg+xml') ext = 'svg';
+            return ext;
+        }
+        return 'png';
+    }
+
+    // 2. 普通 URL 的路径最后一部分
+    const cleanUrl = url.split('?')[0].split('#')[0];
+    const rawLastSegment = cleanUrl.split('/').pop() || '';
+    const extMatch = rawLastSegment.match(/\.([a-zA-Z0-9]{2,5})$/i);
+    if (extMatch) {
+        let ext = extMatch[1].toLowerCase();
+        if (ext === 'jpeg') ext = 'jpg';
+        return ext;
+    }
+
+    // 3. 检查 query 参数中的格式参数（如 ?format=webp 或 ?wx_fmt=png）
+    const paramMatch = url.match(/[?&](?:format|fmt|wx_fmt|f|type)=([a-zA-Z0-9]{2,5})/i);
+    if (paramMatch) {
+        let ext = paramMatch[1].toLowerCase();
+        if (ext === 'jpeg') ext = 'jpg';
+        return ext;
+    }
+
+    return 'jpg';
+};
+
+/**
+ * 根据重命名模式生成最终下载文件名（不含命名空间目录）
+ */
+export const generateImageFilename = (
+    url: string,
+    index: number,
+    mode: RenameMode = 'original'
+): string => {
+    const ext = getImageExtension(url);
+
+    // 模式 2: URL MD5 Hash 值加上文件后缀 (比如 .jpg)
+    if (mode === 'md5') {
+        const hash = CryptoJS.MD5(url).toString();
+        return `${hash}.${ext}`;
+    }
+
+    // 模式 3: 顺序编号 (比如 img_1.jpg)
+    if (mode === 'index') {
+        return `img_${index + 1}.${ext}`;
+    }
+
+    // 模式 1: 原文件名称（带兜底）
+    if (url.startsWith('data:image/')) {
+        return `img_${index + 1}.${ext}`;
+    }
+
+    const cleanUrl = url.split('?')[0].split('#')[0];
+    const rawLastSegment = cleanUrl.split('/').pop() || '';
+    const rawBaseName = rawLastSegment.replace(/\.[a-zA-Z0-9]+$/, '');
+
+    let decodedBaseName = rawBaseName;
+    try {
+        decodedBaseName = decodeURIComponent(rawBaseName);
+    } catch {
+        decodedBaseName = rawBaseName;
+    }
+
+    const safeName = sanitizeFilename(decodedBaseName);
+    return `${safeName || `img_${index + 1}`}.${ext}`;
+};
+
+
 export async function saveDataToLocal(key: string, data: any) {
     if (typeof chrome !== 'undefined' && chrome.storage?.local) {
         // 使用 JSON 序列化脱去 Vue 3 Proxy 包装，防止数组被 Chrome 存储序列化为普通 Object

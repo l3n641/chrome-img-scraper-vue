@@ -128,14 +128,23 @@
       </div>
     </div>
 
+    <div class="form-item">
+      <label for="rename-mode-select">下载重命名方式</label>
+      <select
+          id="rename-mode-select"
+          v-model="renameMode"
+          class="custom-select"
+      >
+        <option value="original">1 - 原文件名称</option>
+        <option value="md5">2 - URL MD5 Hash 值加上文件后缀 (比如 .jpg)</option>
+        <option value="index">3 - 顺序编号 (img_1.jpg)</option>
+      </select>
+    </div>
+
     <div class="form-item checkbox-item">
       <label>
         <input v-model="isImgMode" type="checkbox"/>
         预览图片
-      </label>
-      <label>
-        <input v-model="isFileRename" type="checkbox"/>
-        顺序重命名 (img_1.jpg)
       </label>
     </div>
 
@@ -224,7 +233,9 @@ import {
   getEffectiveNamespace,
   sanitizeFilename,
   saveDataToLocal,
-  runWithConcurrencyLimit
+  runWithConcurrencyLimit,
+  generateImageFilename,
+  type RenameMode
 } from './ts/app.ts';
 
 // 模板数据结构定义
@@ -238,7 +249,8 @@ export interface ScraperTemplate {
   regexPattern: string;
   replaceText: string;
   isImgMode: boolean;
-  isFileRename: boolean;
+  isFileRename?: boolean;
+  renameMode?: RenameMode;
 }
 
 // 模板管理状态
@@ -253,7 +265,7 @@ const selectorAttribute = ref('src');
 const listenNode = ref('');
 const isImgMode = ref(true);
 const isObserving = ref(false);
-const isFileRename = ref(false);
+const renameMode = ref<RenameMode>('original');
 const historyImageStore = ref<Set<string>>(new Set()); // 已下载的历史 URL 集合
 const imageStore = ref<Set<string>>(new Set());        // 待下载的 URL 集合
 const imageList = ref<string[]>([]);
@@ -307,7 +319,13 @@ const applyTemplate = () => {
   regexPattern.value = target.regexPattern ?? '\\?.*$';
   replaceText.value = target.replaceText ?? '';
   if (typeof target.isImgMode === 'boolean') isImgMode.value = target.isImgMode;
-  if (typeof target.isFileRename === 'boolean') isFileRename.value = target.isFileRename;
+  if (target.renameMode) {
+    renameMode.value = target.renameMode;
+  } else if (typeof target.isFileRename === 'boolean') {
+    renameMode.value = target.isFileRename ? 'index' : 'original';
+  } else {
+    renameMode.value = 'original';
+  }
 
   saveDataToLocal('lastSelectedTemplateId', selectedTemplateId.value);
   console.log(`[模板] 已切换应用模板: ${target.name}`);
@@ -331,7 +349,8 @@ const saveCurrentAsTemplate = async () => {
     regexPattern: regexPattern.value,
     replaceText: replaceText.value,
     isImgMode: isImgMode.value,
-    isFileRename: isFileRename.value,
+    isFileRename: renameMode.value === 'index',
+    renameMode: renameMode.value,
   };
 
   const existingIndex = templateList.value.findIndex(t => t.name === name);
@@ -422,7 +441,7 @@ onMounted(async () => {
 
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
     chrome.storage.local.get(
-        ['lastSelector', 'lastSelectorAttribute', 'lastListenNode', 'lastNamespace', 'lastRegexPattern', 'lastReplaceText'],
+        ['lastSelector', 'lastSelectorAttribute', 'lastListenNode', 'lastNamespace', 'lastRegexPattern', 'lastReplaceText', 'lastRenameMode', 'lastIsFileRename'],
         (result: {[key: string]: any}) => {
           if (result.lastSelector) selector.value = result.lastSelector;
           if (result.lastSelectorAttribute) selectorAttribute.value = result.lastSelectorAttribute;
@@ -430,6 +449,11 @@ onMounted(async () => {
           if (result.lastNamespace) namespace.value = result.lastNamespace;
           if (result.lastRegexPattern) regexPattern.value = result.lastRegexPattern;
           if (result.lastReplaceText) replaceText.value = result.lastReplaceText;
+          if (result.lastRenameMode) {
+            renameMode.value = result.lastRenameMode;
+          } else if (typeof result.lastIsFileRename === 'boolean') {
+            renameMode.value = result.lastIsFileRename ? 'index' : 'original';
+          }
         }
     );
   }
@@ -438,6 +462,10 @@ onMounted(async () => {
 
 watch(namespace, () => {
   loadHistoryByNamespace();
+});
+
+watch(renameMode, (val) => {
+  saveDataToLocal('lastRenameMode', val);
 });
 
 // 向页面发送抓取指令
@@ -450,6 +478,7 @@ const sendCommandToPage = async () => {
   await saveDataToLocal('lastNamespace', namespace.value);
   await saveDataToLocal('lastRegexPattern', regexPattern.value);
   await saveDataToLocal('lastReplaceText', replaceText.value);
+  await saveDataToLocal('lastRenameMode', renameMode.value);
 
   try {
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
@@ -542,29 +571,8 @@ const handleDownloadAll = async () => {
         return;
       }
 
-      // 文件名与扩展名解析
-      let ext = 'jpg';
-      let cleanFilename = '';
-
-      if (url.startsWith('data:image/')) {
-        const mimeMatch = url.match(/^data:image\/([a-zA-Z0-9]+);/);
-        ext = mimeMatch ? mimeMatch[1].toLowerCase() : 'png';
-        cleanFilename = `img_${index + 1}.${ext}`;
-      } else {
-        const cleanUrl = url.split('?')[0].split('#')[0];
-        const rawLastSegment = cleanUrl.split('/').pop() || '';
-        const extMatch = rawLastSegment.match(/\.([a-zA-Z0-9]{2,5})$/i);
-        ext = extMatch ? extMatch[1].toLowerCase() : 'jpg';
-
-        if (isFileRename.value) {
-          cleanFilename = `img_${index + 1}.${ext}`;
-        } else {
-          const rawBaseName = rawLastSegment.replace(/\.[a-zA-Z0-9]+$/, '');
-          const safeName = sanitizeFilename(decodeURIComponent(rawBaseName || 'img'));
-          cleanFilename = `${safeName || `img_${index + 1}`}.${ext}`;
-        }
-      }
-
+      // 根据选中的重命名规则生成文件名
+      const cleanFilename = generateImageFilename(url, index, renameMode.value);
       const filename = `${activeNamespace}/${cleanFilename}`;
 
       return new Promise<void>((resolve) => {
@@ -843,16 +851,20 @@ h3 {
   color: #555;
 }
 
-input[type="text"] {
+input[type="text"],
+select.custom-select {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid #ddd;
   border-radius: 4px;
   box-sizing: border-box;
   font-size: 13px;
+  background-color: #fff;
+  color: #333;
 }
 
-input[type="text"]:focus {
+input[type="text"]:focus,
+select.custom-select:focus {
   outline: none;
   border-color: #3498db;
 }
