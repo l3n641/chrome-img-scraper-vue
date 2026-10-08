@@ -75,12 +75,48 @@
     </div>
 
     <div class="form-item">
-      <label for="listen-node-input">监听节点容器 (可选):</label>
+      <label for="scrape-mode-select">抓取执行方式</label>
+      <select
+          id="scrape-mode-select"
+          v-model="scrapeMode"
+          class="custom-select"
+      >
+        <option value="1">1 - 单次抓取</option>
+        <option value="2">2 - 定时器滚动滚动条抓取</option>
+        <option value="3">3 - 监听节点容器</option>
+      </select>
+    </div>
+
+    <!-- 模式 2: 定时器滚动抓取参数 -->
+    <div v-if="scrapeMode === '2'" class="scroll-settings-row">
+      <div class="form-item form-item-half">
+        <label for="scroll-pixels-input">滚动像素 (px)</label>
+        <input
+            id="scroll-pixels-input"
+            v-model.number="scrollPixels"
+            type="number"
+            placeholder="例如: 500"
+        />
+      </div>
+      <div class="form-item form-item-half">
+        <label for="scroll-interval-input">定时器周期 (毫秒)</label>
+        <input
+            id="scroll-interval-input"
+            v-model.number="scrollInterval"
+            type="number"
+            placeholder="例如: 1000"
+        />
+      </div>
+    </div>
+
+    <!-- 模式 3: 监听节点容器输入框 -->
+    <div v-if="scrapeMode === '3'" class="form-item">
+      <label for="listen-node-input">监听节点容器</label>
       <input
           id="listen-node-input"
           v-model="listenNode"
           type="text"
-          placeholder="留空单次抓取；填容器选择器则监听动态加载"
+          placeholder="输入容器选择器，例如: #feed-list 或 .container"
       />
     </div>
 
@@ -154,7 +190,7 @@
 
     <div class="actions">
       <button
-          v-if="!isObserving"
+          v-if="!isRunning"
           @click="sendCommandToPage"
           :disabled="downloadStatus.isDownloading"
           class="btn-primary"
@@ -163,10 +199,10 @@
       </button>
       <button
           v-else
-          @click="stopObserverInPage"
+          @click="stopRunningInPage"
           class="btn-warning"
       >
-        停止监听
+        {{ isScrolling ? '停止滚动' : '停止监听' }}
       </button>
 
       <button
@@ -229,7 +265,7 @@
 </template>
 
 <script setup lang="ts">
-import {ref, onMounted, watch, onUnmounted} from 'vue';
+import {ref, onMounted, watch, onUnmounted, computed} from 'vue';
 import {
   saveHistoryToDB,
   getHistoryFromDB,
@@ -242,12 +278,17 @@ import {
   type RenameMode
 } from './ts/app.ts';
 
+export type ScrapeMode = '1' | '2' | '3';
+
 // 模板数据结构定义
 export interface ScraperTemplate {
   id: string;
   name: string;
   selector: string;
   selectorAttribute: string;
+  scrapeMode?: ScrapeMode;
+  scrollPixels?: number;
+  scrollInterval?: number;
   listenNode: string;
   namespace: string;
   regexPattern: string;
@@ -267,10 +308,15 @@ const newTemplateName = ref('');
 // 响应式状态
 const selector = ref('img');
 const selectorAttribute = ref('src');
+const scrapeMode = ref<ScrapeMode>('1');
+const scrollPixels = ref<number>(500);
+const scrollInterval = ref<number>(1000);
 const listenNode = ref('');
 const isImgMode = ref(true);
 const markScraped = ref(false);
 const isObserving = ref(false);
+const isScrolling = ref(false);
+const isRunning = computed(() => isObserving.value || isScrolling.value);
 const renameMode = ref<RenameMode>('original');
 const historyImageStore = ref<Set<string>>(new Set()); // 已下载的历史 URL 集合
 const imageStore = ref<Set<string>>(new Set());        // 待下载的 URL 集合
@@ -321,6 +367,19 @@ const applyTemplate = () => {
   selector.value = target.selector;
   selectorAttribute.value = target.selectorAttribute;
   listenNode.value = target.listenNode || '';
+  if (target.scrapeMode) {
+    scrapeMode.value = target.scrapeMode;
+  } else if (target.listenNode && target.listenNode.trim()) {
+    scrapeMode.value = '3';
+  } else {
+    scrapeMode.value = '1';
+  }
+  if (typeof target.scrollPixels === 'number') {
+    scrollPixels.value = target.scrollPixels;
+  }
+  if (typeof target.scrollInterval === 'number') {
+    scrollInterval.value = target.scrollInterval;
+  }
   namespace.value = target.namespace || '';
   regexPattern.value = target.regexPattern ?? '\\?.*$';
   replaceText.value = target.replaceText ?? '';
@@ -351,6 +410,9 @@ const saveCurrentAsTemplate = async () => {
     name,
     selector: selector.value,
     selectorAttribute: selectorAttribute.value,
+    scrapeMode: scrapeMode.value,
+    scrollPixels: scrollPixels.value,
+    scrollInterval: scrollInterval.value,
     listenNode: listenNode.value,
     namespace: namespace.value,
     regexPattern: regexPattern.value,
@@ -461,10 +523,30 @@ onMounted(async () => {
 
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
     chrome.storage.local.get(
-        ['lastSelector', 'lastSelectorAttribute', 'lastListenNode', 'lastNamespace', 'lastRegexPattern', 'lastReplaceText', 'lastRenameMode', 'lastIsFileRename', 'lastMarkScraped'],
+        [
+          'lastSelector',
+          'lastSelectorAttribute',
+          'lastScrapeMode',
+          'lastScrollPixels',
+          'lastScrollInterval',
+          'lastListenNode',
+          'lastNamespace',
+          'lastRegexPattern',
+          'lastReplaceText',
+          'lastRenameMode',
+          'lastIsFileRename',
+          'lastMarkScraped'
+        ],
         (result: {[key: string]: any}) => {
           if (result.lastSelector) selector.value = result.lastSelector;
           if (result.lastSelectorAttribute) selectorAttribute.value = result.lastSelectorAttribute;
+          if (result.lastScrapeMode) {
+            scrapeMode.value = result.lastScrapeMode;
+          } else if (result.lastListenNode) {
+            scrapeMode.value = '3';
+          }
+          if (result.lastScrollPixels !== undefined) scrollPixels.value = Number(result.lastScrollPixels) || 500;
+          if (result.lastScrollInterval !== undefined) scrollInterval.value = Number(result.lastScrollInterval) || 1000;
           if (result.lastListenNode) listenNode.value = result.lastListenNode;
           if (result.lastNamespace) namespace.value = result.lastNamespace;
           if (result.lastRegexPattern) regexPattern.value = result.lastRegexPattern;
@@ -485,6 +567,21 @@ watch(namespace, () => {
   loadHistoryByNamespace();
 });
 
+watch(scrapeMode, (val) => {
+  saveDataToLocal('lastScrapeMode', val);
+  if (isRunning.value) {
+    stopRunningInPage();
+  }
+});
+
+watch(scrollPixels, (val) => {
+  saveDataToLocal('lastScrollPixels', val);
+});
+
+watch(scrollInterval, (val) => {
+  saveDataToLocal('lastScrollInterval', val);
+});
+
 watch(renameMode, (val) => {
   saveDataToLocal('lastRenameMode', val);
 });
@@ -499,6 +596,9 @@ const sendCommandToPage = async () => {
 
   await saveDataToLocal('lastSelector', selector.value);
   await saveDataToLocal('lastSelectorAttribute', selectorAttribute.value);
+  await saveDataToLocal('lastScrapeMode', scrapeMode.value);
+  await saveDataToLocal('lastScrollPixels', scrollPixels.value);
+  await saveDataToLocal('lastScrollInterval', scrollInterval.value);
   await saveDataToLocal('lastListenNode', listenNode.value);
   await saveDataToLocal('lastNamespace', namespace.value);
   await saveDataToLocal('lastRegexPattern', regexPattern.value);
@@ -514,11 +614,30 @@ const sendCommandToPage = async () => {
     }
 
     let command = "scrapeCSS";
-    if (listenNode.value && listenNode.value.trim() !== '') {
-      command = "initImageObserver";
-      isObserving.value = true;
-    } else {
+    const args: any = {
+      selector: selector.value,
+      selectorAttribute: selectorAttribute.value,
+      markScraped: markScraped.value,
+    };
+
+    if (scrapeMode.value === '1') {
+      // 1-单次抓取：执行 scrapeCSS 一次
+      command = "scrapeCSS";
       isObserving.value = false;
+      isScrolling.value = false;
+    } else if (scrapeMode.value === '2') {
+      // 2-定时器滚动滚动条抓取：滚动后执行 scrapeCSS
+      command = "startScrollScrape";
+      args.scrollPixels = Number(scrollPixels.value) || 500;
+      args.scrollInterval = Number(scrollInterval.value) || 1000;
+      isScrolling.value = true;
+      isObserving.value = false;
+    } else if (scrapeMode.value === '3') {
+      // 3-监听节点容器：执行 initImageObserver
+      command = "initImageObserver";
+      args.listenNode = listenNode.value;
+      isObserving.value = true;
+      isScrolling.value = false;
     }
 
     chrome.tabs.sendMessage(
@@ -527,18 +646,14 @@ const sendCommandToPage = async () => {
           action: 'START_SCRAPE_FROM_SIDEBAR',
           payload: {
             command,
-            args: {
-              selector: selector.value,
-              selectorAttribute: selectorAttribute.value,
-              listenNode: listenNode.value,
-              markScraped: markScraped.value,
-            }
+            args
           }
         },
         (response) => {
           if (chrome.runtime.lastError) {
             errorMsg.value = '无法与当前网页通信，请确保在普通网页并刷新重试';
             isObserving.value = false;
+            isScrolling.value = false;
             return;
           }
 
@@ -548,29 +663,32 @@ const sendCommandToPage = async () => {
           } else {
             errorMsg.value = response?.error || '网页解析失败';
             isObserving.value = false;
+            isScrolling.value = false;
           }
         }
     );
   } catch (error: any) {
     errorMsg.value = `通信异常: ${error?.message || error}`;
     isObserving.value = false;
+    isScrolling.value = false;
   }
 };
 
-// 停止页面的监听
-const stopObserverInPage = async () => {
+// 停止页面的监听或滚动定时器
+const stopRunningInPage = async () => {
   try {
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     if (tab?.id) {
       chrome.tabs.sendMessage(tab.id, {
         action: 'START_SCRAPE_FROM_SIDEBAR',
-        payload: { command: 'stopObserver' }
+        payload: { command: 'stopAll' }
       });
     }
   } catch (err) {
-    console.warn('停止监听消息发送失败:', err);
+    console.warn('停止命令发送失败:', err);
   } finally {
     isObserving.value = false;
+    isScrolling.value = false;
   }
 };
 
@@ -740,7 +858,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   chrome.runtime.onMessage.removeListener(handleMessage);
-  stopObserverInPage();
+  stopRunningInPage();
 });
 </script>
 
@@ -870,6 +988,15 @@ h3 {
   margin-bottom: 12px;
 }
 
+.scroll-settings-row {
+  display: flex;
+  gap: 10px;
+}
+
+.form-item-half {
+  flex: 1;
+}
+
 .form-item label {
   display: block;
   margin-bottom: 4px;
@@ -879,6 +1006,7 @@ h3 {
 }
 
 input[type="text"],
+input[type="number"],
 select.custom-select {
   width: 100%;
   padding: 8px 10px;
@@ -891,6 +1019,7 @@ select.custom-select {
 }
 
 input[type="text"]:focus,
+input[type="number"]:focus,
 select.custom-select:focus {
   outline: none;
   border-color: #3498db;

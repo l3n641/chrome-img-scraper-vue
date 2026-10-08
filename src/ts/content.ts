@@ -1,11 +1,16 @@
-import {scrapeCSS, initImageObserver, stopImageObserver, clearScrapedMarks} from './utils';
+import {
+    scrapeCSS,
+    initImageObserver,
+    stopImageObserver,
+    startScrollScrape,
+    stopScrollScrape,
+    stopAllScrapers,
+    clearScrapedMarks,
+    type ScrapeResult
+} from './utils';
 
-// 定义返回的数据类型结构
-export interface ScrapeResult {
-    success: boolean;
-    data?: string[];
-    error?: string;
-}
+// 导出返回的数据类型结构
+export type { ScrapeResult };
 
 // 建议设置一个唯一的消息来源标识，避免误触页面其他 postMessage
 const MESSAGE_SOURCE = 'MY_SCRAPER_SNIPPET';
@@ -56,20 +61,64 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const {command, args} = message.payload;
         switch (command) {
             case "scrapeCSS": {
+                // 1-单次抓取：停止其他可能运行的定时器/监听器，执行一次 scrapeCSS
+                stopAllScrapers();
                 const result = scrapeCSS(args.selector, args.selectorAttribute, document, args.markScraped);
                 console.log('[Content Script] scrapeCSS 结果:', result);
                 sendResponse(result);
                 break;
             }
+            case "startScrollScrape": {
+                // 2-定时器滚动滚动条抓取：先停止 observer，开始滚动并周期抓取
+                stopImageObserver();
+                const result = startScrollScrape(
+                    Number(args.scrollPixels) || 500,
+                    Number(args.scrollInterval) || 1000,
+                    args.selector,
+                    args.selectorAttribute,
+                    args.markScraped,
+                    undefined,
+                    (scrollResult) => {
+                        // 每次定时滚动抓取后将结果发送给侧边栏
+                        chrome.runtime.sendMessage(
+                            {
+                                action: 'FROM_PAGE_SCRAPE_RESULT',
+                                payload: scrollResult,
+                            },
+                            () => {
+                                if (chrome.runtime.lastError) {
+                                    // 侧边栏可能已关闭，自动停止滚动定时器
+                                    stopScrollScrape();
+                                }
+                            }
+                        );
+                    }
+                );
+                console.log('[Content Script] startScrollScrape 初始结果:', result);
+                sendResponse(result);
+                break;
+            }
             case "initImageObserver": {
+                // 3-监听节点容器：先停止滚动定时器，初始化节点监听
+                stopScrollScrape();
                 const result = initImageObserver(args.listenNode, args.selector, args.selectorAttribute, args.markScraped);
                 console.log('[Content Script] initImageObserver 初始结果:', result);
                 sendResponse(result);
                 break;
             }
+            case "stopScroll": {
+                stopScrollScrape();
+                sendResponse({success: true, message: '已停止滚动'});
+                break;
+            }
             case "stopObserver": {
                 stopImageObserver();
                 sendResponse({success: true, message: '已停止监听'});
+                break;
+            }
+            case "stopAll": {
+                stopAllScrapers();
+                sendResponse({success: true, message: '已停止所有抓取任务'});
                 break;
             }
             case "clearMarks": {

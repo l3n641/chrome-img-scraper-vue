@@ -1,4 +1,12 @@
+export interface ScrapeResult {
+    success: boolean;
+    data?: string[];
+    error?: string;
+    message?: string;
+}
+
 let currentObserver: MutationObserver | null = null;
+let currentScrollTimer: any = null;
 
 /**
  * 停止当前运行的 MutationObserver
@@ -9,6 +17,25 @@ export function stopImageObserver() {
         currentObserver = null;
         console.log('[Observer] 监听已停止');
     }
+}
+
+/**
+ * 停止当前运行的滚动定时器
+ */
+export function stopScrollScrape() {
+    if (currentScrollTimer) {
+        clearInterval(currentScrollTimer);
+        currentScrollTimer = null;
+        console.log('[ScrollScrape] 定时滚动抓取已停止');
+    }
+}
+
+/**
+ * 停止所有正在运行的抓取任务（MutationObserver 与 定时滚动）
+ */
+export function stopAllScrapers() {
+    stopImageObserver();
+    stopScrollScrape();
 }
 
 /**
@@ -183,4 +210,51 @@ export function initImageObserver(
     });
 
     return {success: true, data: Array.from(new Set(initialData))};
+}
+
+/**
+ * 定时滚动抓取：每次先执行滚动，然后执行 scrapeCSS
+ */
+export function startScrollScrape(
+    scrollPixels: number = 500,
+    scrollInterval: number = 1000,
+    cssSelector: string,
+    attributeName: string = 'src',
+    markScraped: boolean = false,
+    markClass: string = DEFAULT_MARK_CLASS,
+    onResult?: (result: ScrapeResult) => void
+): ScrapeResult {
+    // 启动前先停止之前的定时器，防止重复执行
+    stopScrollScrape();
+
+    const doScrollAndScrape = (): ScrapeResult => {
+        try {
+            // 1. 先执行滚动
+            window.scrollBy(0, scrollPixels);
+
+            // 2. 滚动后执行 scrapeCSS
+            const res = scrapeCSS(cssSelector, attributeName, document, markScraped, markClass);
+            if (onResult && res.success && res.data) {
+                onResult(res);
+            }
+            return res;
+        } catch (error: any) {
+            const errRes: ScrapeResult = { success: false, error: error.message, data: [] };
+            if (onResult) {
+                onResult(errRes);
+            }
+            return errRes;
+        }
+    };
+
+    // 首次先执行一次滚动后抓取
+    const initialResult = doScrollAndScrape();
+
+    // 启动周期定时器
+    const interval = Math.max(Number(scrollInterval) || 1000, 100);
+    currentScrollTimer = setInterval(() => {
+        doScrollAndScrape();
+    }, interval);
+
+    return initialResult;
 }
