@@ -146,6 +146,10 @@
         <input v-model="isImgMode" type="checkbox"/>
         预览图片
       </label>
+      <label title="勾选后为已遍历元素添加类标记(qf-scraped-item)，下次遍历时跳过已标记元素，防止多次匹配导致卡顿">
+        <input v-model="markScraped" type="checkbox"/>
+        跳过已遍历元素 (防卡顿)
+      </label>
     </div>
 
     <div class="actions">
@@ -251,6 +255,7 @@ export interface ScraperTemplate {
   isImgMode: boolean;
   isFileRename?: boolean;
   renameMode?: RenameMode;
+  markScraped?: boolean;
 }
 
 // 模板管理状态
@@ -264,6 +269,7 @@ const selector = ref('img');
 const selectorAttribute = ref('src');
 const listenNode = ref('');
 const isImgMode = ref(true);
+const markScraped = ref(false);
 const isObserving = ref(false);
 const renameMode = ref<RenameMode>('original');
 const historyImageStore = ref<Set<string>>(new Set()); // 已下载的历史 URL 集合
@@ -319,6 +325,7 @@ const applyTemplate = () => {
   regexPattern.value = target.regexPattern ?? '\\?.*$';
   replaceText.value = target.replaceText ?? '';
   if (typeof target.isImgMode === 'boolean') isImgMode.value = target.isImgMode;
+  if (typeof target.markScraped === 'boolean') markScraped.value = target.markScraped;
   if (target.renameMode) {
     renameMode.value = target.renameMode;
   } else if (typeof target.isFileRename === 'boolean') {
@@ -349,6 +356,7 @@ const saveCurrentAsTemplate = async () => {
     regexPattern: regexPattern.value,
     replaceText: replaceText.value,
     isImgMode: isImgMode.value,
+    markScraped: markScraped.value,
     isFileRename: renameMode.value === 'index',
     renameMode: renameMode.value,
   };
@@ -430,10 +438,22 @@ const handleClearHistory = async () => {
   }
 };
 
-const handleClearList = () => {
+const handleClearList = async () => {
   imageList.value = [];
   imageStore.value.clear();
   imageStore.value = new Set();
+
+  try {
+    const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+    if (tab?.id) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'START_SCRAPE_FROM_SIDEBAR',
+        payload: { command: 'clearMarks' }
+      });
+    }
+  } catch (err) {
+    console.warn('清空页面标记失败:', err);
+  }
 };
 
 onMounted(async () => {
@@ -441,7 +461,7 @@ onMounted(async () => {
 
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
     chrome.storage.local.get(
-        ['lastSelector', 'lastSelectorAttribute', 'lastListenNode', 'lastNamespace', 'lastRegexPattern', 'lastReplaceText', 'lastRenameMode', 'lastIsFileRename'],
+        ['lastSelector', 'lastSelectorAttribute', 'lastListenNode', 'lastNamespace', 'lastRegexPattern', 'lastReplaceText', 'lastRenameMode', 'lastIsFileRename', 'lastMarkScraped'],
         (result: {[key: string]: any}) => {
           if (result.lastSelector) selector.value = result.lastSelector;
           if (result.lastSelectorAttribute) selectorAttribute.value = result.lastSelectorAttribute;
@@ -449,6 +469,7 @@ onMounted(async () => {
           if (result.lastNamespace) namespace.value = result.lastNamespace;
           if (result.lastRegexPattern) regexPattern.value = result.lastRegexPattern;
           if (result.lastReplaceText) replaceText.value = result.lastReplaceText;
+          if (typeof result.lastMarkScraped === 'boolean') markScraped.value = result.lastMarkScraped;
           if (result.lastRenameMode) {
             renameMode.value = result.lastRenameMode;
           } else if (typeof result.lastIsFileRename === 'boolean') {
@@ -468,6 +489,10 @@ watch(renameMode, (val) => {
   saveDataToLocal('lastRenameMode', val);
 });
 
+watch(markScraped, (val) => {
+  saveDataToLocal('lastMarkScraped', val);
+});
+
 // 向页面发送抓取指令
 const sendCommandToPage = async () => {
   errorMsg.value = '';
@@ -479,6 +504,7 @@ const sendCommandToPage = async () => {
   await saveDataToLocal('lastRegexPattern', regexPattern.value);
   await saveDataToLocal('lastReplaceText', replaceText.value);
   await saveDataToLocal('lastRenameMode', renameMode.value);
+  await saveDataToLocal('lastMarkScraped', markScraped.value);
 
   try {
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
@@ -505,6 +531,7 @@ const sendCommandToPage = async () => {
               selector: selector.value,
               selectorAttribute: selectorAttribute.value,
               listenNode: listenNode.value,
+              markScraped: markScraped.value,
             }
           }
         },
@@ -517,7 +544,7 @@ const sendCommandToPage = async () => {
 
           if (response?.success) {
             const finalData = response.data || [];
-            processAndStoreImages(finalData, false);
+            processAndStoreImages(finalData, markScraped.value);
           } else {
             errorMsg.value = response?.error || '网页解析失败';
             isObserving.value = false;
@@ -905,6 +932,7 @@ select.custom-select:focus {
 .checkbox-item {
   display: flex;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .checkbox-item label {

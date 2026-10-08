@@ -28,6 +28,23 @@ export function toAbsoluteUrl(url: string): string {
     }
 }
 
+export const DEFAULT_MARK_CLASS = 'qf-scraped-item';
+
+/**
+ * 清除页面中已遍历元素上的标记类
+ */
+export function clearScrapedMarks(markClass: string = DEFAULT_MARK_CLASS) {
+    try {
+        const elements = document.querySelectorAll(`.${markClass}`);
+        elements.forEach((el) => {
+            el.classList.remove(markClass);
+        });
+        return {success: true, message: `已清除 ${elements.length} 个元素的标记`};
+    } catch (error: any) {
+        return {success: false, error: error.message};
+    }
+}
+
 /**
  * 根据 CSS 选择器提取指定属性
  */
@@ -35,6 +52,8 @@ export function scrapeCSS(
     cssSelector: string,
     attributeName: string = 'src',
     root: Document | Element = document,
+    markScraped: boolean = false,
+    markClass: string = DEFAULT_MARK_CLASS,
 ) {
     const results: string[] = [];
     try {
@@ -43,10 +62,20 @@ export function scrapeCSS(
 
         // 提取单个元素的指定属性并转为绝对路径
         const extractAttr = (element: Element) => {
+            // 如果开启标记且元素已拥有标记类，则跳过不重复处理，避免页面卡顿
+            if (markScraped && element.classList?.contains(markClass)) {
+                return;
+            }
+
             const val = element.getAttribute(attr);
             if (val) {
                 const absolute = toAbsoluteUrl(val);
                 if (absolute) results.push(absolute);
+            }
+
+            // 为已遍历的元素添加标记类
+            if (markScraped && element.classList) {
+                element.classList.add(markClass);
             }
         };
 
@@ -73,6 +102,8 @@ export function initImageObserver(
     listenSelector: string,
     targetCssSelector: string,
     attributeName: string = 'src',
+    markScraped: boolean = false,
+    markClass: string = DEFAULT_MARK_CLASS,
 ) {
     // 启动前先停止之前的 observer，避免重复挂载
     stopImageObserver();
@@ -100,7 +131,7 @@ export function initImageObserver(
 
         const nodeResults: string[] = [];
         targets.forEach(target => {
-            const res = scrapeCSS(targetCssSelector, attributeName, target);
+            const res = scrapeCSS(targetCssSelector, attributeName, target, markScraped, markClass);
             if (res.success && res.data) {
                 nodeResults.push(...res.data);
             }
@@ -110,7 +141,7 @@ export function initImageObserver(
     };
 
     // 1. 首次全量扫描已有的 targetCssSelector 节点
-    const initialRes = scrapeCSS(targetCssSelector, attributeName, container);
+    const initialRes = scrapeCSS(targetCssSelector, attributeName, container, markScraped, markClass);
     const initialData = initialRes.data || [];
     initialData.forEach(url => recordedUrls.add(url));
 

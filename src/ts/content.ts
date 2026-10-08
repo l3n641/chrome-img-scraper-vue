@@ -1,4 +1,4 @@
-import {scrapeCSS, initImageObserver, stopImageObserver} from './utils';
+import {scrapeCSS, initImageObserver, stopImageObserver, clearScrapedMarks} from './utils';
 
 // 定义返回的数据类型结构
 export interface ScrapeResult {
@@ -56,13 +56,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const {command, args} = message.payload;
         switch (command) {
             case "scrapeCSS": {
-                const result = scrapeCSS(args.selector, args.selectorAttribute);
+                const result = scrapeCSS(args.selector, args.selectorAttribute, document, args.markScraped);
                 console.log('[Content Script] scrapeCSS 结果:', result);
                 sendResponse(result);
                 break;
             }
             case "initImageObserver": {
-                const result = initImageObserver(args.listenNode, args.selector, args.selectorAttribute);
+                const result = initImageObserver(args.listenNode, args.selector, args.selectorAttribute, args.markScraped);
                 console.log('[Content Script] initImageObserver 初始结果:', result);
                 sendResponse(result);
                 break;
@@ -70,6 +70,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             case "stopObserver": {
                 stopImageObserver();
                 sendResponse({success: true, message: '已停止监听'});
+                break;
+            }
+            case "clearMarks": {
+                const result = clearScrapedMarks();
+                console.log('[Content Script] clearMarks 结果:', result);
+                sendResponse(result);
                 break;
             }
         }
