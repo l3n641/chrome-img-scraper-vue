@@ -177,6 +177,29 @@
       </select>
     </div>
 
+    <div class="download-settings-row">
+      <div class="form-item form-item-half">
+        <label for="concurrency-limit-input">最大并发数 (推荐 3 ~ 5)</label>
+        <input
+            id="concurrency-limit-input"
+            v-model.number="concurrencyLimit"
+            type="number"
+            min="1"
+            placeholder="例如: 3"
+        />
+      </div>
+      <div class="form-item form-item-half">
+        <label for="task-delay-input">启动间隔 (毫秒)</label>
+        <input
+            id="task-delay-input"
+            v-model.number="taskDelay"
+            type="number"
+            min="0"
+            placeholder="例如: 150"
+        />
+      </div>
+    </div>
+
     <div class="form-item checkbox-item">
       <label>
         <input v-model="isImgMode" type="checkbox"/>
@@ -297,6 +320,8 @@ export interface ScraperTemplate {
   isFileRename?: boolean;
   renameMode?: RenameMode;
   markScraped?: boolean;
+  concurrencyLimit?: number;
+  taskDelay?: number;
 }
 
 // 模板管理状态
@@ -318,6 +343,8 @@ const isObserving = ref(false);
 const isScrolling = ref(false);
 const isRunning = computed(() => isObserving.value || isScrolling.value);
 const renameMode = ref<RenameMode>('original');
+const concurrencyLimit = ref<number>(3);
+const taskDelay = ref<number>(150);
 const historyImageStore = ref<Set<string>>(new Set()); // 已下载的历史 URL 集合
 const imageStore = ref<Set<string>>(new Set());        // 待下载的 URL 集合
 const imageList = ref<string[]>([]);
@@ -392,6 +419,12 @@ const applyTemplate = () => {
   } else {
     renameMode.value = 'original';
   }
+  if (typeof target.concurrencyLimit === 'number') {
+    concurrencyLimit.value = target.concurrencyLimit;
+  }
+  if (typeof target.taskDelay === 'number') {
+    taskDelay.value = target.taskDelay;
+  }
 
   saveDataToLocal('lastSelectedTemplateId', selectedTemplateId.value);
   console.log(`[模板] 已切换应用模板: ${target.name}`);
@@ -421,6 +454,8 @@ const saveCurrentAsTemplate = async () => {
     markScraped: markScraped.value,
     isFileRename: renameMode.value === 'index',
     renameMode: renameMode.value,
+    concurrencyLimit: concurrencyLimit.value,
+    taskDelay: taskDelay.value,
   };
 
   const existingIndex = templateList.value.findIndex(t => t.name === name);
@@ -535,7 +570,9 @@ onMounted(async () => {
           'lastReplaceText',
           'lastRenameMode',
           'lastIsFileRename',
-          'lastMarkScraped'
+          'lastMarkScraped',
+          'lastConcurrencyLimit',
+          'lastTaskDelay'
         ],
         (result: {[key: string]: any}) => {
           if (result.lastSelector) selector.value = result.lastSelector;
@@ -556,6 +593,12 @@ onMounted(async () => {
             renameMode.value = result.lastRenameMode;
           } else if (typeof result.lastIsFileRename === 'boolean') {
             renameMode.value = result.lastIsFileRename ? 'index' : 'original';
+          }
+          if (result.lastConcurrencyLimit !== undefined) {
+            concurrencyLimit.value = Number(result.lastConcurrencyLimit) || 3;
+          }
+          if (result.lastTaskDelay !== undefined) {
+            taskDelay.value = Number(result.lastTaskDelay) >= 0 ? Number(result.lastTaskDelay) : 150;
           }
         }
     );
@@ -588,6 +631,14 @@ watch(renameMode, (val) => {
 
 watch(markScraped, (val) => {
   saveDataToLocal('lastMarkScraped', val);
+});
+
+watch(concurrencyLimit, (val) => {
+  saveDataToLocal('lastConcurrencyLimit', val);
+});
+
+watch(taskDelay, (val) => {
+  saveDataToLocal('lastTaskDelay', val);
 });
 
 // 向页面发送抓取指令
@@ -751,7 +802,12 @@ const handleDownloadAll = async () => {
   });
 
   try {
-    await runWithConcurrencyLimit(tasks, 3, 150, (completed) => {
+    const limit = Number(concurrencyLimit.value) > 0 ? Math.floor(Number(concurrencyLimit.value)) : 3;
+    const delay = (taskDelay.value !== undefined && taskDelay.value !== null && !isNaN(Number(taskDelay.value)) && Number(taskDelay.value) >= 0)
+      ? Number(taskDelay.value)
+      : 150;
+
+    await runWithConcurrencyLimit(tasks, limit, delay, (completed) => {
       downloadStatus.value.current = completed;
     });
   } finally {
@@ -988,7 +1044,8 @@ h3 {
   margin-bottom: 12px;
 }
 
-.scroll-settings-row {
+.scroll-settings-row,
+.download-settings-row {
   display: flex;
   gap: 10px;
 }
