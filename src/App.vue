@@ -6,14 +6,42 @@
     <div class="template-section">
       <div class="template-header">
         <label for="template-select">规则模板</label>
-        <button
-            type="button"
-            class="btn-text-action"
-            @click="showSaveBox = !showSaveBox"
-            :title="showSaveBox ? '取消保存' : '将当前输入框内容保存为模板'"
-        >
-          {{ showSaveBox ? '✕ 取消' : '＋ 存为模板' }}
-        </button>
+        <div class="template-header-actions">
+          <button
+              type="button"
+              class="btn-text-action"
+              @click="triggerImportTemplates"
+              title="从 JSON 文件导入规则模板（同名自动覆盖）"
+          >
+            导入
+          </button>
+          <span class="action-divider">|</span>
+          <button
+              type="button"
+              class="btn-text-action"
+              @click="exportTemplates"
+              :disabled="templateList.length === 0"
+              title="导出所有规则模板到 JSON 文件"
+          >
+            导出
+          </button>
+          <span class="action-divider">|</span>
+          <button
+              type="button"
+              class="btn-text-action"
+              @click="showSaveBox = !showSaveBox"
+              :title="showSaveBox ? '取消保存' : '将当前输入框内容保存为模板'"
+          >
+            {{ showSaveBox ? '✕ 取消' : '＋ 存为模板' }}
+          </button>
+        </div>
+        <input
+            ref="templateFileInput"
+            type="file"
+            accept=".json,application/json"
+            style="display: none"
+            @change="handleImportTemplates"
+        />
       </div>
 
       <div class="template-row">
@@ -329,6 +357,7 @@ const templateList = ref<ScraperTemplate[]>([]);
 const selectedTemplateId = ref<string>('');
 const showSaveBox = ref(false);
 const newTemplateName = ref('');
+const templateFileInput = ref<HTMLInputElement | null>(null);
 
 // 响应式状态
 const selector = ref('img');
@@ -496,6 +525,154 @@ const deleteTemplate = async (id: string) => {
     await saveDataToLocal('lastSelectedTemplateId', '');
   }
   console.log(`[模板] 已删除模板: ${target.name}`);
+};
+
+// 导出所有规则模板到 JSON 文件
+const exportTemplates = () => {
+  if (templateList.value.length === 0) {
+    errorMsg.value = '当前没有可导出的规则模板';
+    return;
+  }
+
+  errorMsg.value = '';
+  try {
+    const jsonContent = JSON.stringify(templateList.value, null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.setAttribute('download', `scraper_templates_${Date.now()}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(blobUrl);
+
+    console.log(`[模板] 已导出 ${templateList.value.length} 个规则模板`);
+  } catch (err) {
+    console.error('导出模板 JSON 失败:', err);
+    errorMsg.value = '导出规则模板失败';
+  }
+};
+
+// 触发选择导入 JSON 文件
+const triggerImportTemplates = () => {
+  errorMsg.value = '';
+  templateFileInput.value?.click();
+};
+
+// 从 JSON 文件导入规则模板（同名自动覆盖）
+const handleImportTemplates = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  errorMsg.value = '';
+
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+
+    // 兼容数组格式、{ templates: [...] } 格式或单模板对象格式
+    let rawTemplates: any[] = [];
+    if (Array.isArray(parsed)) {
+      rawTemplates = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      if (Array.isArray(parsed.templates)) {
+        rawTemplates = parsed.templates;
+      } else if (typeof parsed.name === 'string') {
+        rawTemplates = [parsed];
+      }
+    }
+
+    if (rawTemplates.length === 0) {
+      errorMsg.value = '导入失败：JSON 文件中未找到有效的规则模板数据';
+      return;
+    }
+
+    let addedCount = 0;
+    let updatedCount = 0;
+    let currentSelectedUpdated = false;
+
+    rawTemplates.forEach((item, index) => {
+      if (!item || typeof item !== 'object') return;
+      const trimmedName = typeof item.name === 'string' ? item.name.trim() : '';
+      if (!trimmedName) return;
+
+      const resolvedRenameMode: RenameMode =
+        item.renameMode === 'original' || item.renameMode === 'md5' || item.renameMode === 'index'
+          ? item.renameMode
+          : item.isFileRename
+            ? 'index'
+            : 'original';
+
+      const resolvedScrapeMode: ScrapeMode =
+        item.scrapeMode === '1' || item.scrapeMode === '2' || item.scrapeMode === '3'
+          ? item.scrapeMode
+          : item.listenNode && String(item.listenNode).trim()
+            ? '3'
+            : '1';
+
+      const normalizedTemplate: ScraperTemplate = {
+        id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `tpl_${Date.now()}_${index}`,
+        name: trimmedName,
+        selector: typeof item.selector === 'string' ? item.selector : 'img',
+        selectorAttribute: typeof item.selectorAttribute === 'string' ? item.selectorAttribute : 'src',
+        scrapeMode: resolvedScrapeMode,
+        scrollPixels: typeof item.scrollPixels === 'number' && !isNaN(item.scrollPixels) ? item.scrollPixels : 500,
+        scrollInterval: typeof item.scrollInterval === 'number' && !isNaN(item.scrollInterval) ? item.scrollInterval : 1000,
+        listenNode: typeof item.listenNode === 'string' ? item.listenNode : '',
+        namespace: typeof item.namespace === 'string' ? item.namespace : '',
+        regexPattern: typeof item.regexPattern === 'string' ? item.regexPattern : '\\?.*$',
+        replaceText: typeof item.replaceText === 'string' ? item.replaceText : '',
+        isImgMode: typeof item.isImgMode === 'boolean' ? item.isImgMode : true,
+        markScraped: typeof item.markScraped === 'boolean' ? item.markScraped : false,
+        isFileRename: resolvedRenameMode === 'index',
+        renameMode: resolvedRenameMode,
+        concurrencyLimit: typeof item.concurrencyLimit === 'number' && item.concurrencyLimit > 0 ? item.concurrencyLimit : 3,
+        taskDelay: typeof item.taskDelay === 'number' && item.taskDelay >= 0 ? item.taskDelay : 150,
+      };
+
+      const existingIndex = templateList.value.findIndex(t => t.name === trimmedName);
+      if (existingIndex > -1) {
+        // 名称重复则覆盖已存在的规则模板，并保留原有 ID
+        const existingId = templateList.value[existingIndex].id;
+        normalizedTemplate.id = existingId;
+        templateList.value[existingIndex] = normalizedTemplate;
+        updatedCount++;
+        if (selectedTemplateId.value === existingId) {
+          currentSelectedUpdated = true;
+        }
+      } else {
+        // 确保新模板 ID 不与现有模板冲突
+        if (templateList.value.some(t => t.id === normalizedTemplate.id)) {
+          normalizedTemplate.id = `tpl_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`;
+        }
+        templateList.value.push(normalizedTemplate);
+        addedCount++;
+      }
+    });
+
+    if (addedCount === 0 && updatedCount === 0) {
+      errorMsg.value = '导入失败：未识别到包含有效名称的规则模板';
+      return;
+    }
+
+    await saveDataToLocal('scraperTemplates', templateList.value);
+
+    // 如果当前选中的模板被覆盖更新，同步刷新表单显示
+    if (currentSelectedUpdated) {
+      applyTemplate();
+    }
+
+    console.log(`[模板] 导入完成：新增 ${addedCount} 个，覆盖 ${updatedCount} 个`);
+    alert(`导入成功！共处理 ${addedCount + updatedCount} 个模板（新增 ${addedCount} 个，覆盖同名 ${updatedCount} 个）。`);
+  } catch (err) {
+    console.error('解析模板 JSON 文件失败:', err);
+    errorMsg.value = '导入失败：无效的 JSON 文件格式';
+  } finally {
+    input.value = '';
+  }
 };
 
 // 根据命名空间加载已下载历史
@@ -979,7 +1156,20 @@ h3 {
   color: #475569;
 }
 
+.template-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-divider {
+  color: #cbd5e1;
+  font-size: 11px;
+  user-select: none;
+}
+
 .btn-text-action {
+  flex: 0 0 auto;
   background: none;
   border: none;
   color: #3498db;
@@ -989,8 +1179,14 @@ h3 {
   padding: 0;
 }
 
-.btn-text-action:hover {
+.btn-text-action:hover:not(:disabled) {
   color: #2980b9;
+}
+
+.btn-text-action:disabled {
+  background: none !important;
+  color: #cbd5e1 !important;
+  cursor: not-allowed;
 }
 
 .template-row {
