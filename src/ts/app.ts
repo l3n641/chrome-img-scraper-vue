@@ -34,14 +34,24 @@ export const getHistoryFromDB = async (currentNamespace: string): Promise<string
 // 使用 Promise 链式队列，杜绝并发下载时 saveHistoryToDB 的 Lost Update 覆盖问题
 let dbQueue: Promise<void> = Promise.resolve();
 
-export const saveHistoryToDB = (currentNamespace: string, newUrl: string): Promise<void> => {
+export const saveHistoryToDB = (currentNamespace: string, newUrl: string | string[]): Promise<void> => {
     dbQueue = dbQueue.then(async () => {
-        if (!currentNamespace || !newUrl) return;
+        const urlsToAdd = Array.isArray(newUrl) ? newUrl.filter(Boolean) : (newUrl ? [newUrl] : []);
+        if (!currentNamespace || urlsToAdd.length === 0) return;
         const db = await initDB();
         const currentHistory = await getHistoryFromDB(currentNamespace);
+        const historySet = new Set(currentHistory);
+        let changed = false;
 
-        if (!currentHistory.includes(newUrl)) {
-            currentHistory.push(newUrl);
+        for (const u of urlsToAdd) {
+            if (!historySet.has(u)) {
+                historySet.add(u);
+                currentHistory.push(u);
+                changed = true;
+            }
+        }
+
+        if (changed) {
             return new Promise<void>((resolve, reject) => {
                 const transaction = db.transaction(STORE_NAME, 'readwrite');
                 const store = transaction.objectStore(STORE_NAME);

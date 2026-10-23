@@ -501,7 +501,8 @@ const deleteTemplate = async (id: string) => {
 // 根据命名空间加载已下载历史
 const loadHistoryByNamespace = async () => {
   try {
-    const targetNamespace = await getEffectiveNamespace(namespace.value);
+    const rawNamespace = await getEffectiveNamespace(namespace.value);
+    const targetNamespace = sanitizeFilename(rawNamespace) || 'downloads';
     const historyArray = await getHistoryFromDB(targetNamespace);
     historyImageStore.value = new Set(historyArray);
     console.log(`[IndexedDB] 成功载入 [${targetNamespace}] 历史记录，共 ${historyArray.length} 条`);
@@ -519,7 +520,8 @@ const loadHistoryByNamespace = async () => {
 // 清空当前命名空间的已下载记录
 const handleClearHistory = async () => {
   try {
-    const targetNamespace = await getEffectiveNamespace(namespace.value);
+    const rawNamespace = await getEffectiveNamespace(namespace.value);
+    const targetNamespace = sanitizeFilename(rawNamespace) || 'downloads';
     await clearHistoryInDB(targetNamespace);
     historyImageStore.value.clear();
     historyImageStore.value = new Set();
@@ -644,6 +646,8 @@ watch(taskDelay, (val) => {
 // 向页面发送抓取指令
 const sendCommandToPage = async () => {
   errorMsg.value = '';
+
+  await loadHistoryByNamespace();
 
   await saveDataToLocal('lastSelector', selector.value);
   await saveDataToLocal('lastSelectorAttribute', selectorAttribute.value);
@@ -818,10 +822,12 @@ const handleDownloadAll = async () => {
 };
 
 // 导出 CSV 链接
-const handleExportData = () => {
+const handleExportData = async () => {
   const images = [...imageStore.value];
   const targetImages = images.length > 0 ? images : imageList.value;
   if (targetImages.length === 0) return;
+
+  const shouldSaveToDB = confirm('是否将导出的链接保存到数据库里？\n（点击确认后将标记为已下载，下次遍历时会提示该链接已下载）');
 
   let csvContent = '\uFEFF图片链接\n';
   targetImages.forEach((url) => {
@@ -840,6 +846,25 @@ const handleExportData = () => {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(blobUrl);
+
+    if (shouldSaveToDB) {
+      const rawNamespace = await getEffectiveNamespace(namespace.value);
+      const activeNamespace = sanitizeFilename(rawNamespace) || 'downloads';
+
+      targetImages.forEach((url) => {
+        historyImageStore.value.add(url);
+        imageStore.value.delete(url);
+      });
+      historyImageStore.value = new Set(historyImageStore.value);
+      imageStore.value = new Set(imageStore.value);
+
+      try {
+        await saveHistoryToDB(activeNamespace, targetImages);
+        console.log(`[导出] 已将 ${targetImages.length} 条链接保存到数据库 [${activeNamespace}]`);
+      } catch (dbErr) {
+        console.error('导出时写入 IndexedDB 失败:', dbErr);
+      }
+    }
   } catch (err) {
     console.error('导出 CSV 失败:', err);
     errorMsg.value = '导出 CSV 失败';
