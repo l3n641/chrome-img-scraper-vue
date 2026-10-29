@@ -3,10 +3,12 @@ export interface ScrapeResult {
     data?: string[];
     error?: string;
     message?: string;
+    finished?: boolean;
 }
 
 let currentObserver: MutationObserver | null = null;
 let currentScrollTimer: any = null;
+let currentLoadMoreTimer: any = null;
 
 /**
  * 停止当前运行的 MutationObserver
@@ -31,11 +33,23 @@ export function stopScrollScrape() {
 }
 
 /**
- * 停止所有正在运行的抓取任务（MutationObserver 与 定时滚动）
+ * 停止当前运行的点击加载更多定时器
+ */
+export function stopLoadMoreScrape() {
+    if (currentLoadMoreTimer) {
+        clearInterval(currentLoadMoreTimer);
+        currentLoadMoreTimer = null;
+        console.log('[LoadMoreScrape] 自动点击加载更多已停止');
+    }
+}
+
+/**
+ * 停止所有正在运行的抓取任务（MutationObserver、定时滚动、定时点击加载更多）
  */
 export function stopAllScrapers() {
     stopImageObserver();
     stopScrollScrape();
+    stopLoadMoreScrape();
 }
 
 /**
@@ -81,7 +95,7 @@ export function scrapeCSS(
     root: Document | Element = document,
     markScraped: boolean = false,
     markClass: string = DEFAULT_MARK_CLASS,
-) {
+): ScrapeResult {
     const results: string[] = [];
     try {
         if (!cssSelector?.trim()) return {success: true, data: results};
@@ -255,6 +269,88 @@ export function startScrollScrape(
     currentScrollTimer = setInterval(() => {
         doScrollAndScrape();
     }, interval);
+
+    return initialResult;
+}
+
+/**
+ * 定时点击加载更多按钮抓取：每隔指定时间，先抓取内容，然后如果有加载更多按钮则点击按钮
+ */
+export function startLoadMoreScrape(
+    loadMoreSelector: string,
+    loadMoreInterval: number = 1500,
+    cssSelector: string,
+    attributeName: string = 'src',
+    markScraped: boolean = false,
+    markClass: string = DEFAULT_MARK_CLASS,
+    onResult?: (result: ScrapeResult) => void
+): ScrapeResult {
+    // 启动前先停止之前的定时器，防止重复执行
+    stopLoadMoreScrape();
+
+    const btnSelector = loadMoreSelector?.trim();
+    if (!btnSelector) {
+        return { success: false, error: '请输入加载更多按钮的 CSS 选择器', data: [] };
+    }
+
+    const doScrapeAndClick = (isInitial: boolean = false): ScrapeResult => {
+        try {
+            // 1. 先抓取内容
+            const res = scrapeCSS(cssSelector, attributeName, document, markScraped, markClass);
+            if (!res.success) {
+                stopLoadMoreScrape();
+                res.finished = true;
+                if (!isInitial && onResult) {
+                    onResult(res);
+                }
+                return res;
+            }
+
+            // 2. 查找加载更多按钮并触发点击
+            const btn = document.querySelector(btnSelector) as HTMLElement | null;
+
+            if (btn && btn.offsetParent !== null) {
+                btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+                // 用 dispatchEvent 替代 btn.click()
+                const clickEvent = new MouseEvent('click', {
+                    view: window,
+                    bubbles: true,      // 必须开启冒泡，否则委托在祖先元素上的监听无法捕获
+                    cancelable: true
+                });
+                btn.dispatchEvent(clickEvent);
+
+                console.log('通过 dispatchEvent 触发了一次加载...');
+            } else {
+                stopLoadMoreScrape();
+                res.finished = true;
+                console.log('所有内容已加载完毕或未找到按钮，停止自动点击。');
+            }
+
+            if (!isInitial && onResult) {
+                onResult(res);
+            }
+            return res;
+        } catch (error: any) {
+            stopLoadMoreScrape();
+            const errRes: ScrapeResult = { success: false, error: error.message, data: [], finished: true };
+            if (!isInitial && onResult) {
+                onResult(errRes);
+            }
+            return errRes;
+        }
+    };
+
+    // 首次执行一次：先抓取内容，再尝试点击加载更多按钮
+    const initialResult = doScrapeAndClick(true);
+
+    // 如果首次找到了加载更多按钮且未结束，则启动周期定时器
+    if (initialResult.success && !initialResult.finished) {
+        const interval = Math.max(Number(loadMoreInterval) || 1500, 100);
+        currentLoadMoreTimer = setInterval(() => {
+            doScrapeAndClick(false);
+        }, interval);
+    }
 
     return initialResult;
 }

@@ -112,6 +112,7 @@
         <option value="1">1 - 单次抓取</option>
         <option value="2">2 - 定时器滚动滚动条抓取</option>
         <option value="3">3 - 监听节点容器</option>
+        <option value="4">4 - 点击加载更多按钮</option>
       </select>
     </div>
 
@@ -147,6 +148,29 @@
           placeholder="输入容器选择器，例如: #feed-list 或 .container"
       />
     </div>
+
+    <!-- 模式 4: 点击加载更多按钮参数 -->
+    <template v-if="scrapeMode === '4'">
+      <div class="form-item">
+        <label for="load-more-selector-input">加载更多按钮 CSS 选择器</label>
+        <input
+            id="load-more-selector-input"
+            v-model="loadMoreSelector"
+            type="text"
+            placeholder='例如: .load-more 或 div[aria-label="See more items"][role="button"]'
+        />
+      </div>
+      <div class="form-item">
+        <label for="load-more-interval-input">点击时间间隔 (毫秒)</label>
+        <input
+            id="load-more-interval-input"
+            v-model.number="loadMoreInterval"
+            type="number"
+            min="100"
+            placeholder="例如: 1500"
+        />
+      </div>
+    </template>
 
     <div class="form-item">
       <label for="namespace-input">命名空间 (子文件夹名):</label>
@@ -262,7 +286,7 @@
           @click="stopRunningInPage"
           class="btn-warning"
       >
-        {{ isScrolling ? '停止滚动' : '停止监听' }}
+        {{ isScrolling ? '停止滚动' : isClickingLoadMore ? '停止点击' : '停止监听' }}
       </button>
 
       <button
@@ -338,7 +362,7 @@ import {
   type RenameMode
 } from './ts/app.ts';
 
-export type ScrapeMode = '1' | '2' | '3';
+export type ScrapeMode = '1' | '2' | '3' | '4';
 
 // 模板数据结构定义
 export interface ScraperTemplate {
@@ -350,6 +374,8 @@ export interface ScraperTemplate {
   scrollPixels?: number;
   scrollInterval?: number;
   listenNode: string;
+  loadMoreSelector?: string;
+  loadMoreInterval?: number;
   namespace: string;
   regexPattern: string;
   replaceText: string;
@@ -375,11 +401,14 @@ const scrapeMode = ref<ScrapeMode>('1');
 const scrollPixels = ref<number>(500);
 const scrollInterval = ref<number>(1000);
 const listenNode = ref('');
+const loadMoreSelector = ref('');
+const loadMoreInterval = ref<number>(1500);
 const isImgMode = ref(true);
 const markScraped = ref(false);
 const isObserving = ref(false);
 const isScrolling = ref(false);
-const isRunning = computed(() => isObserving.value || isScrolling.value);
+const isClickingLoadMore = ref(false);
+const isRunning = computed(() => isObserving.value || isScrolling.value || isClickingLoadMore.value);
 const renameMode = ref<RenameMode>('original');
 const concurrencyLimit = ref<number>(3);
 const taskDelay = ref<number>(150);
@@ -432,6 +461,10 @@ const applyTemplate = () => {
   selector.value = target.selector;
   selectorAttribute.value = target.selectorAttribute;
   listenNode.value = target.listenNode || '';
+  loadMoreSelector.value = target.loadMoreSelector || '';
+  if (typeof target.loadMoreInterval === 'number') {
+    loadMoreInterval.value = target.loadMoreInterval;
+  }
   if (target.scrapeMode) {
     scrapeMode.value = target.scrapeMode;
   } else if (target.listenNode && target.listenNode.trim()) {
@@ -485,6 +518,8 @@ const saveCurrentAsTemplate = async () => {
     scrollPixels: scrollPixels.value,
     scrollInterval: scrollInterval.value,
     listenNode: listenNode.value,
+    loadMoreSelector: loadMoreSelector.value,
+    loadMoreInterval: loadMoreInterval.value,
     namespace: namespace.value,
     regexPattern: regexPattern.value,
     replaceText: replaceText.value,
@@ -616,7 +651,7 @@ const handleImportTemplates = async (event: Event) => {
             : 'original';
 
       const resolvedScrapeMode: ScrapeMode =
-        item.scrapeMode === '1' || item.scrapeMode === '2' || item.scrapeMode === '3'
+        item.scrapeMode === '1' || item.scrapeMode === '2' || item.scrapeMode === '3' || item.scrapeMode === '4'
           ? item.scrapeMode
           : item.listenNode && String(item.listenNode).trim()
             ? '3'
@@ -631,6 +666,8 @@ const handleImportTemplates = async (event: Event) => {
         scrollPixels: typeof item.scrollPixels === 'number' && !isNaN(item.scrollPixels) ? item.scrollPixels : 500,
         scrollInterval: typeof item.scrollInterval === 'number' && !isNaN(item.scrollInterval) ? item.scrollInterval : 1000,
         listenNode: typeof item.listenNode === 'string' ? item.listenNode : '',
+        loadMoreSelector: typeof item.loadMoreSelector === 'string' ? item.loadMoreSelector : '',
+        loadMoreInterval: typeof item.loadMoreInterval === 'number' && !isNaN(item.loadMoreInterval) ? item.loadMoreInterval : 1500,
         namespace: typeof item.namespace === 'string' ? item.namespace : '',
         regexPattern: typeof item.regexPattern === 'string' ? item.regexPattern : '\\?.*$',
         replaceText: typeof item.replaceText === 'string' ? item.replaceText : '',
@@ -791,6 +828,8 @@ onMounted(async () => {
           'lastScrollPixels',
           'lastScrollInterval',
           'lastListenNode',
+          'lastLoadMoreSelector',
+          'lastLoadMoreInterval',
           'lastNamespace',
           'lastRegexPattern',
           'lastReplaceText',
@@ -811,6 +850,8 @@ onMounted(async () => {
           if (result.lastScrollPixels !== undefined) scrollPixels.value = Number(result.lastScrollPixels) || 500;
           if (result.lastScrollInterval !== undefined) scrollInterval.value = Number(result.lastScrollInterval) || 1000;
           if (result.lastListenNode) listenNode.value = result.lastListenNode;
+          if (result.lastLoadMoreSelector) loadMoreSelector.value = result.lastLoadMoreSelector;
+          if (result.lastLoadMoreInterval !== undefined) loadMoreInterval.value = Number(result.lastLoadMoreInterval) || 1500;
           if (result.lastNamespace) namespace.value = result.lastNamespace;
           if (result.lastRegexPattern) regexPattern.value = result.lastRegexPattern;
           if (result.lastReplaceText) replaceText.value = result.lastReplaceText;
@@ -851,6 +892,14 @@ watch(scrollInterval, (val) => {
   saveDataToLocal('lastScrollInterval', val);
 });
 
+watch(loadMoreSelector, (val) => {
+  saveDataToLocal('lastLoadMoreSelector', val);
+});
+
+watch(loadMoreInterval, (val) => {
+  saveDataToLocal('lastLoadMoreInterval', val);
+});
+
 watch(renameMode, (val) => {
   saveDataToLocal('lastRenameMode', val);
 });
@@ -871,6 +920,11 @@ watch(taskDelay, (val) => {
 const sendCommandToPage = async () => {
   errorMsg.value = '';
 
+  if (scrapeMode.value === '4' && !loadMoreSelector.value.trim()) {
+    errorMsg.value = '请输入加载更多按钮的 CSS 选择器';
+    return;
+  }
+
   await loadHistoryByNamespace();
 
   await saveDataToLocal('lastSelector', selector.value);
@@ -879,6 +933,8 @@ const sendCommandToPage = async () => {
   await saveDataToLocal('lastScrollPixels', scrollPixels.value);
   await saveDataToLocal('lastScrollInterval', scrollInterval.value);
   await saveDataToLocal('lastListenNode', listenNode.value);
+  await saveDataToLocal('lastLoadMoreSelector', loadMoreSelector.value);
+  await saveDataToLocal('lastLoadMoreInterval', loadMoreInterval.value);
   await saveDataToLocal('lastNamespace', namespace.value);
   await saveDataToLocal('lastRegexPattern', regexPattern.value);
   await saveDataToLocal('lastReplaceText', replaceText.value);
@@ -904,6 +960,7 @@ const sendCommandToPage = async () => {
       command = "scrapeCSS";
       isObserving.value = false;
       isScrolling.value = false;
+      isClickingLoadMore.value = false;
     } else if (scrapeMode.value === '2') {
       // 2-定时器滚动滚动条抓取：滚动后执行 scrapeCSS
       command = "startScrollScrape";
@@ -911,11 +968,21 @@ const sendCommandToPage = async () => {
       args.scrollInterval = Number(scrollInterval.value) || 1000;
       isScrolling.value = true;
       isObserving.value = false;
+      isClickingLoadMore.value = false;
     } else if (scrapeMode.value === '3') {
       // 3-监听节点容器：执行 initImageObserver
       command = "initImageObserver";
       args.listenNode = listenNode.value;
       isObserving.value = true;
+      isScrolling.value = false;
+      isClickingLoadMore.value = false;
+    } else if (scrapeMode.value === '4') {
+      // 4-点击加载更多按钮：先执行 scrapeCSS，再点击加载更多按钮
+      command = "startLoadMoreScrape";
+      args.loadMoreSelector = loadMoreSelector.value;
+      args.loadMoreInterval = Number(loadMoreInterval.value) || 1500;
+      isClickingLoadMore.value = true;
+      isObserving.value = false;
       isScrolling.value = false;
     }
 
@@ -933,16 +1000,21 @@ const sendCommandToPage = async () => {
             errorMsg.value = '无法与当前网页通信，请确保在普通网页并刷新重试';
             isObserving.value = false;
             isScrolling.value = false;
+            isClickingLoadMore.value = false;
             return;
           }
 
           if (response?.success) {
             const finalData = response.data || [];
             processAndStoreImages(finalData, markScraped.value);
+            if (response.finished) {
+              isClickingLoadMore.value = false;
+            }
           } else {
             errorMsg.value = response?.error || '网页解析失败';
             isObserving.value = false;
             isScrolling.value = false;
+            isClickingLoadMore.value = false;
           }
         }
     );
@@ -950,6 +1022,7 @@ const sendCommandToPage = async () => {
     errorMsg.value = `通信异常: ${error?.message || error}`;
     isObserving.value = false;
     isScrolling.value = false;
+    isClickingLoadMore.value = false;
   }
 };
 
@@ -968,6 +1041,7 @@ const stopRunningInPage = async () => {
   } finally {
     isObserving.value = false;
     isScrolling.value = false;
+    isClickingLoadMore.value = false;
   }
 };
 
@@ -1103,13 +1177,17 @@ const handleImgError = (event: Event) => {
 // 监听来自 Content Script 转发过来的消息 (包含控制台与 Observer)
 const handleMessage = (message: any, _sender: chrome.runtime.MessageSender, sendResponse: (response?: any) => void) => {
   if (message.action === 'FROM_PAGE_SCRAPE_RESULT') {
-    const {success, data, error} = message.payload;
+    const {success, data, error, finished} = message.payload;
 
     if (success && data) {
       // 动态追加去重
       processAndStoreImages(data, true);
-    } else {
+    } else if (!success) {
       errorMsg.value = error || '抓取失败';
+    }
+
+    if (finished) {
+      isClickingLoadMore.value = false;
     }
 
     sendResponse({status: 'ok'});

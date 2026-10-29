@@ -4,6 +4,8 @@ import {
     stopImageObserver,
     startScrollScrape,
     stopScrollScrape,
+    startLoadMoreScrape,
+    stopLoadMoreScrape,
     stopAllScrapers,
     clearScrapedMarks,
     type ScrapeResult
@@ -69,8 +71,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                 break;
             }
             case "startScrollScrape": {
-                // 2-定时器滚动滚动条抓取：先停止 observer，开始滚动并周期抓取
-                stopImageObserver();
+                // 2-定时器滚动滚动条抓取：先停止其他任务，开始滚动并周期抓取
+                stopAllScrapers();
                 const result = startScrollScrape(
                     Number(args.scrollPixels) || 500,
                     Number(args.scrollInterval) || 1000,
@@ -99,10 +101,40 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                 break;
             }
             case "initImageObserver": {
-                // 3-监听节点容器：先停止滚动定时器，初始化节点监听
-                stopScrollScrape();
+                // 3-监听节点容器：先停止其他任务，初始化节点监听
+                stopAllScrapers();
                 const result = initImageObserver(args.listenNode, args.selector, args.selectorAttribute, args.markScraped);
                 console.log('[Content Script] initImageObserver 初始结果:', result);
+                sendResponse(result);
+                break;
+            }
+            case "startLoadMoreScrape": {
+                // 4-点击加载更多按钮抓取：先停止其他任务，开始周期性抓取并点击加载更多按钮
+                stopAllScrapers();
+                const result = startLoadMoreScrape(
+                    args.loadMoreSelector,
+                    Number(args.loadMoreInterval) || 1500,
+                    args.selector,
+                    args.selectorAttribute,
+                    args.markScraped,
+                    undefined,
+                    (loadMoreResult) => {
+                        // 每次定时抓取后将结果发送给侧边栏
+                        chrome.runtime.sendMessage(
+                            {
+                                action: 'FROM_PAGE_SCRAPE_RESULT',
+                                payload: loadMoreResult,
+                            },
+                            () => {
+                                if (chrome.runtime.lastError) {
+                                    // 侧边栏可能已关闭，自动停止定时器
+                                    stopLoadMoreScrape();
+                                }
+                            }
+                        );
+                    }
+                );
+                console.log('[Content Script] startLoadMoreScrape 初始结果:', result);
                 sendResponse(result);
                 break;
             }
@@ -114,6 +146,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             case "stopObserver": {
                 stopImageObserver();
                 sendResponse({success: true, message: '已停止监听'});
+                break;
+            }
+            case "stopLoadMore": {
+                stopLoadMoreScrape();
+                sendResponse({success: true, message: '已停止点击加载更多'});
                 break;
             }
             case "stopAll": {
@@ -131,4 +168,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     return true;
-});
+});
