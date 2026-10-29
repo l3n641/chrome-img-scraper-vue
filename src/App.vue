@@ -159,6 +159,15 @@
             placeholder="留空默认当前网址 MD5"
         />
         <button
+            type="button"
+            class="btn-text btn-text-primary"
+            @click="handleExportHistory"
+            :title="'导出此命名空间在 IndexedDB 中的历史数据到 CSV (' + historyImageStore.size + ')'"
+        >
+          导出历史
+        </button>
+        <button
+            type="button"
             class="btn-text"
             @click="handleClearHistory"
             :title="'清空此命名空间的已下载记录 (' + historyImageStore.size + ')'"
@@ -691,6 +700,44 @@ const loadHistoryByNamespace = async () => {
     imageStore.value = new Set(imageStore.value);
   } catch (err) {
     console.error('读取 IndexedDB 历史记录失败:', err);
+  }
+};
+
+// 导出当前命名空间在 IndexedDB 中的历史数据到 CSV
+const handleExportHistory = async () => {
+  errorMsg.value = '';
+  try {
+    const rawNamespace = await getEffectiveNamespace(namespace.value);
+    const targetNamespace = sanitizeFilename(rawNamespace) || 'downloads';
+    const historyArray = await getHistoryFromDB(targetNamespace);
+    historyImageStore.value = new Set(historyArray);
+
+    if (historyArray.length === 0) {
+      errorMsg.value = `命名空间 [${targetNamespace}] 在 IndexedDB 中暂无数据可导出`;
+      return;
+    }
+
+    let csvContent = '\uFEFF图片链接\n';
+    historyArray.forEach((url) => {
+      const safeUrl = `"${String(url).replace(/"/g, '""')}"`;
+      csvContent += `${safeUrl}\n`;
+    });
+
+    const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
+    const blobUrl = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.setAttribute('download', `${targetNamespace}_indexeddb_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(blobUrl);
+
+    console.log(`[IndexedDB] 已导出命名空间 [${targetNamespace}] 的历史记录，共 ${historyArray.length} 条`);
+  } catch (err) {
+    console.error('导出 IndexedDB 历史记录到 CSV 失败:', err);
+    errorMsg.value = '导出 IndexedDB 数据到 CSV 失败';
   }
 };
 
@@ -1305,10 +1352,16 @@ select.custom-select:focus {
 
 .namespace-row {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 
+.namespace-row input {
+  flex: 1;
+}
+
 .btn-text {
+  flex: 0 0 auto;
   background: none;
   border: none;
   color: #e74c3c;
@@ -1316,6 +1369,10 @@ select.custom-select:focus {
   font-size: 12px;
   padding: 0 4px;
   white-space: nowrap;
+}
+
+.btn-text-primary {
+  color: #3498db;
 }
 
 .btn-text:hover {
